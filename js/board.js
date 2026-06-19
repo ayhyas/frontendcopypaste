@@ -278,16 +278,37 @@
   async function copyClip(clip) {
     try {
       if (clip.type === 'image') {
-        const res   = await fetch(clip.content);
-        const blob  = await res.blob();
-        await navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+        await copyImageToClipboard(clip.content);
       } else {
         await navigator.clipboard.writeText(clip.content);
       }
       showToast('Copied to clipboard!', 'success');
     } catch {
-      showToast('Copy failed — try manually selecting', 'error');
+      showToast('Copy failed — browser blocked clipboard access', 'error');
     }
+  }
+
+  function copyImageToClipboard(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = img.naturalWidth;
+        canvas.height = img.naturalHeight;
+        canvas.getContext('2d').drawImage(img, 0, 0);
+        canvas.toBlob(async (blob) => {
+          try {
+            // ClipboardItem requires image/png across all browsers
+            await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        }, 'image/png');
+      };
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
   }
 
   async function deleteClip(id) {
