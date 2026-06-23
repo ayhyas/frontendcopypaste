@@ -14,21 +14,69 @@
   let currentWorkspaceId = null; // null = All clips
 
   // Screen share state
-  let isBroadcasting       = false;
-  let localStream          = null;
-  let peerConnections      = {};   // viewerId → RTCPeerConnection (broadcaster side)
-  let viewerPc             = null; // RTCPeerConnection (viewer side)
-  let pendingIceCandidates = [];   // queued before remote description is set
-  let activeBroadcasterId  = null;
+  let isBroadcasting        = false;
+  let localStream           = null;
+  let peerConnections       = {};   // viewerId → RTCPeerConnection (broadcaster side)
+  let viewerPc              = null; // RTCPeerConnection (viewer side)
+  let pendingIceCandidates  = [];   // queued before remote description is set
+  let activeBroadcasterId   = null;
   let activeBroadcasterName = null;
+  let connectingTimer       = null; // viewer connection timeout
 
   const ICE_CONFIG = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
     ],
   };
+
+  // ─── WebRTC compat helpers ──────────────────────────────────────────────────
+  function createPeerConnection() {
+    const PC = window.RTCPeerConnection
+            || window.webkitRTCPeerConnection
+            || window.mozRTCPeerConnection;
+    if (!PC) throw new Error('WebRTC is not supported in this browser');
+    return new PC(ICE_CONFIG);
+  }
+
+  function getDisplayMediaSafe(constraints) {
+    if (navigator.mediaDevices?.getDisplayMedia) {
+      return navigator.mediaDevices.getDisplayMedia(constraints);
+    }
+    // Pre-mediaDevices Chrome (rare but exists)
+    if (navigator.getDisplayMedia) {
+      return Promise.resolve().then(() => navigator.getDisplayMedia(constraints));
+    }
+    const err = new Error('Screen sharing is not supported in this browser');
+    err.name = 'NotSupportedError';
+    return Promise.reject(err);
+  }
+
+  function toSessionDescription(desc) {
+    if (typeof RTCSessionDescription !== 'undefined' && !(desc instanceof RTCSessionDescription)) {
+      try { return new RTCSessionDescription(desc); } catch { /* fall through */ }
+    }
+    return desc;
+  }
+
+  function safeIceCandidate(raw) {
+    if (!raw || !raw.candidate) return null; // null = end-of-candidates, skip
+    try {
+      return typeof RTCIceCandidate !== 'undefined' ? new RTCIceCandidate(raw) : raw;
+    } catch {
+      return raw;
+    }
+  }
+
+  function requestFullscreenCompat(el) {
+    const fn = el.requestFullscreen
+            || el.webkitRequestFullscreen
+            || el.mozRequestFullScreen
+            || el.msRequestFullscreen;
+    if (fn) fn.call(el);
+  }
 
   // ─── DOM refs ──────────────────────────────────────────────────────────────
   const clipsGrid       = document.getElementById('clipsGrid');
@@ -155,7 +203,8 @@
     // Broadcaster: a viewer wants to connect
     socket.on('screen:viewer-joined', async ({ viewerId }) => {
       if (!isBroadcasting || !localStream) return;
-      const pc = new RTCPeerConnection(ICE_CONFIG);
+      let pc;
+      try { pc = createPeerConnection(); } catch { return; }
       peerConnections[viewerId] = pc;
 
       pc.onicecandidate = ({ candidate }) => {
@@ -181,7 +230,7 @@
     // Broadcaster: viewer answered
     socket.on('screen:answer', async ({ viewerId, answer }) => {
       try {
-        await peerConnections[viewerId]?.setRemoteDescription(new RTCSessionDescription(answer));
+        await peerConnections[viewerId]?.setRemoteDescription(toSessionDescription(answer));
       } catch {}
     });
 
@@ -189,7 +238,7 @@
     socket.on('screen:offer', async ({ broadcasterId, offer }) => {
       if (!viewerPc) return;
       try {
-        await viewerPc.setRemoteDescription(new RTCSessionDescription(offer));
+        await viewerPc.setRemoteDescription(toSessionDescription(offer));
         for (const c of pendingIceCandidates) {
           await viewerPc.addIceCandidate(c).catch(() => {});
         }
@@ -200,15 +249,17 @@
       } catch {}
     });
 
-    // ICE candidates — both directions
+    // ICE candidates — both directions (null candidate = end-of-candidates, safe to skip)
     socket.on('screen:ice', ({ fromId, candidate }) => {
+      const ice = safeIceCandidate(candidate);
+      if (!ice) return;
       if (isBroadcasting) {
-        peerConnections[fromId]?.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+        peerConnections[fromId]?.addIceCandidate(ice).catch(() => {});
       } else if (viewerPc) {
         if (viewerPc.remoteDescription) {
-          viewerPc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+          viewerPc.addIceCandidate(ice).catch(() => {});
         } else {
-          pendingIceCandidates.push(new RTCIceCandidate(candidate));
+          pendingIceCandidates.push(ice);
         }
       }
     });
@@ -994,17 +1045,24 @@
   function setupScreenShare() {
     const btn = document.getElementById('shareScreenBtn');
 
-    // Hide button if browser doesn't support getDisplayMedia
-    if (!navigator.mediaDevices?.getDisplayMedia) {
+    // Sharing requires a secure context; hide the button on plain HTTP (except localhost)
+    const isSecure = location.protocol === 'https:'
+                  || location.hostname === 'localhost'
+                  || location.hostname === '127.0.0.1';
+
+    const hasDisplayMedia = !!(navigator.mediaDevices?.getDisplayMedia || navigator.getDisplayMedia);
+    const hasWebRTC = !!(window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection);
+
+    if (!isSecure || !hasDisplayMedia || !hasWebRTC) {
       btn.style.display = 'none';
-      return;
+    } else {
+      btn.addEventListener('click', () => {
+        if (isBroadcasting) stopBroadcasting();
+        else startBroadcasting();
+      });
     }
 
-    btn.addEventListener('click', () => {
-      if (isBroadcasting) stopBroadcasting();
-      else startBroadcasting();
-    });
-
+    // Watch/dismiss always available (viewing uses same WebRTC path)
     document.getElementById('watchLiveBtn').addEventListener('click', () => {
       hideLiveBanner();
       startViewing();
@@ -1012,9 +1070,9 @@
     document.getElementById('liveBannerDismiss').addEventListener('click', hideLiveBanner);
     document.getElementById('liveCloseBtn').addEventListener('click', stopViewing);
     document.getElementById('liveFullscreenBtn').addEventListener('click', () => {
-      const vid = document.getElementById('liveVideo');
-      (vid.requestFullscreen || vid.webkitRequestFullscreen).call(vid);
+      requestFullscreenCompat(document.getElementById('liveVideo'));
     });
+    document.getElementById('liveMuteBtn').addEventListener('click', toggleMute);
 
     const liveVideo = document.getElementById('liveVideo');
     liveVideo.addEventListener('playing', () => {
@@ -1024,21 +1082,24 @@
 
   async function startBroadcasting() {
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+      const stream = await getDisplayMediaSafe({
+        video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 }, cursor: 'always' },
         audio: true,
       });
 
-      localStream   = stream;
+      localStream    = stream;
       isBroadcasting = true;
 
-      // Browser's built-in "Stop sharing" button
+      // Triggers when the user clicks the browser's native "Stop sharing" button
       stream.getVideoTracks()[0].addEventListener('ended', stopBroadcasting);
 
       socket.emit('screen:start', { username: user.username });
       setBroadcastingUI(true);
     } catch (err) {
-      if (err.name !== 'NotAllowedError') showToast('Could not capture screen', 'error');
+      if (err.name === 'NotAllowedError') return; // user cancelled picker — silent
+      if (err.name === 'NotFoundError')     return showToast('No screen available to share', 'error');
+      if (err.name === 'NotSupportedError') return showToast('Screen sharing is not supported in this browser', 'error');
+      showToast('Could not start screen share', 'error');
     }
   }
 
@@ -1074,14 +1135,18 @@
     if (viewerPc) stopViewing();
     if (!activeBroadcasterId) return;
 
-    pendingIceCandidates = [];
+    let pc;
+    try { pc = createPeerConnection(); } catch {
+      showToast('WebRTC is not supported in this browser', 'error');
+      return;
+    }
 
-    const pc = new RTCPeerConnection(ICE_CONFIG);
+    pendingIceCandidates = [];
     viewerPc = pc;
 
     pc.ontrack = ({ streams }) => {
       const vid = document.getElementById('liveVideo');
-      vid.srcObject = streams[0];
+      if (vid.srcObject !== streams[0]) vid.srcObject = streams[0];
     };
 
     pc.onicecandidate = ({ candidate }) => {
@@ -1089,7 +1154,11 @@
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === 'failed') {
+      if (pc.connectionState === 'connected') {
+        clearTimeout(connectingTimer);
+      }
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        clearTimeout(connectingTimer);
         showToast('Stream connection lost', 'error');
         stopViewing();
       }
@@ -1097,17 +1166,40 @@
 
     openLiveOverlay();
     socket.emit('screen:join', { broadcasterId: activeBroadcasterId });
+
+    // Give up after 20 s if WebRTC never connects
+    connectingTimer = setTimeout(() => {
+      if (viewerPc && viewerPc.connectionState !== 'connected') {
+        showToast('Could not connect to the stream — check your network and try again', 'error');
+        stopViewing();
+      }
+    }, 20000);
   }
 
   function stopViewing() {
+    clearTimeout(connectingTimer);
     viewerPc?.close();
     viewerPc = null;
     pendingIceCandidates = [];
 
     const vid = document.getElementById('liveVideo');
-    if (vid.srcObject) { vid.srcObject.getTracks().forEach((t) => t.stop()); vid.srcObject = null; }
+    if (vid.srcObject) {
+      vid.srcObject.getTracks().forEach((t) => t.stop());
+      vid.srcObject = null;
+    }
 
     closeLiveOverlay();
+  }
+
+  function toggleMute() {
+    const vid = document.getElementById('liveVideo');
+    const btn = document.getElementById('liveMuteBtn');
+    vid.muted = !vid.muted;
+    btn.title = vid.muted ? 'Unmute audio' : 'Mute audio';
+    // swap the icon
+    btn.querySelector('svg').innerHTML = vid.muted
+      ? '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'
+      : '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>';
   }
 
   function showLiveBanner(username) {
@@ -1126,6 +1218,15 @@
     document.getElementById('liveOverlayLabel').textContent =
       activeBroadcasterName ? `${activeBroadcasterName}'s screen` : 'Screen share';
     document.getElementById('liveConnecting').style.display = 'flex';
+
+    // Always start muted (avoids autoplay-with-audio block on Safari/Firefox)
+    const vid = document.getElementById('liveVideo');
+    vid.muted = true;
+    const muteBtn = document.getElementById('liveMuteBtn');
+    muteBtn.title = 'Unmute audio';
+    muteBtn.querySelector('svg').innerHTML =
+      '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
+
     overlay.style.display = 'flex';
     requestAnimationFrame(() => overlay.classList.add('live-overlay--visible'));
   }
