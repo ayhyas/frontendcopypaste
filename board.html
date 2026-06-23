@@ -89,36 +89,73 @@
     </div>
   </div>
 
-  <!-- ─── Main content ───────────────────────────────────────────────── -->
-  <main class="board-main">
-    <div class="board-header">
-      <h3 class="board-title">All clips <span class="clip-count" id="clipCount"></span></h3>
-    </div>
+  <!-- ─── Board layout (sidebar + main) ──────────────────────────────── -->
+  <div class="board-layout">
 
-    <!-- Empty state -->
-    <div class="empty-state" id="emptyState" style="display:none">
-      <div class="empty-icon">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
-          <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-          <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
-        </svg>
+    <!-- ─── Workspace sidebar ───────────────────────────────────────── -->
+    <aside class="workspace-sidebar" id="workspaceSidebar">
+      <div class="ws-header">
+        <span class="ws-title">Workspaces</span>
+        <button class="ws-add-btn" id="addWorkspaceBtn" title="New workspace">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+        </button>
       </div>
-      <p>No clips yet — be the first to share!</p>
-    </div>
 
-    <!-- Loading state -->
-    <div class="loading-state" id="loadingState">
-      <div class="loader"></div>
-    </div>
+      <div class="ws-new-form" id="wsNewForm" style="display:none">
+        <input type="text" class="ws-new-input" id="wsNewInput" placeholder="Workspace name…" maxlength="50" />
+        <div class="ws-new-actions">
+          <button class="ws-confirm-btn" id="wsConfirmBtn">Create</button>
+          <button class="ws-cancel-btn" id="wsCancelBtn">Cancel</button>
+        </div>
+      </div>
 
-    <!-- Clips grid -->
-    <div class="clips-grid" id="clipsGrid"></div>
+      <ul class="ws-list" id="wsList">
+        <li class="ws-item ws-item-active" data-id="all" id="wsAllItem">
+          <div class="ws-item-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+              <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+            </svg>
+          </div>
+          <span class="ws-item-name">All clips</span>
+        </li>
+      </ul>
+    </aside>
 
-    <!-- Load more -->
-    <div class="load-more-wrapper" id="loadMoreWrapper" style="display:none">
-      <button class="btn-load-more" id="loadMoreBtn">Load more clips</button>
-    </div>
-  </main>
+    <!-- ─── Main content ─────────────────────────────────────────────── -->
+    <main class="board-main">
+      <div class="board-header">
+        <h3 class="board-title" id="boardTitle">All clips <span class="clip-count" id="clipCount"></span></h3>
+      </div>
+
+      <!-- Empty state -->
+      <div class="empty-state" id="emptyState" style="display:none">
+        <div class="empty-icon">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+            <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+          </svg>
+        </div>
+        <p id="emptyStateText">No clips yet — be the first to share!</p>
+      </div>
+
+      <!-- Loading state -->
+      <div class="loading-state" id="loadingState">
+        <div class="loader"></div>
+      </div>
+
+      <!-- Clips grid -->
+      <div class="clips-grid" id="clipsGrid"></div>
+
+      <!-- Load more -->
+      <div class="load-more-wrapper" id="loadMoreWrapper" style="display:none">
+        <button class="btn-load-more" id="loadMoreBtn">Load more clips</button>
+      </div>
+    </main>
+
+  </div>
 
   <!-- ─── New clip modal ─────────────────────────────────────────────── -->
   <div class="modal-overlay" id="modalOverlay">

@@ -25,9 +25,19 @@ const api = (() => {
       me:       ()     => request('/api/auth/me'),
     },
     clips: {
-      list:   (page = 1) => request(`/api/clips?page=${page}&limit=50`),
+      list:   (page = 1, workspaceId = null) => {
+        const params = new URLSearchParams({ page, limit: 50 });
+        if (workspaceId) params.set('workspace', workspaceId);
+        return request(`/api/clips?${params}`);
+      },
       create: (body)     => request('/api/clips', { method: 'POST', body: JSON.stringify(body) }),
       remove: (id)       => request(`/api/clips/${id}`, { method: 'DELETE' }),
+    },
+    workspaces: {
+      list:   ()          => request('/api/workspaces'),
+      create: (name)      => request('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }),
+      rename: (id, name)  => request(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+      remove: (id)        => request(`/api/workspaces/${id}`, { method: 'DELETE' }),
     },
   };
 })();

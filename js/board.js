@@ -5,11 +5,13 @@
   if (!token || !user) { window.location.replace('index.html'); return; }
 
   // ─── State ─────────────────────────────────────────────────────────────────
-  let clips       = [];
-  let currentPage = 1;
-  let totalPages  = 1;
-  let socket      = null;
-  let isModalOpen = false;
+  let clips              = [];
+  let currentPage        = 1;
+  let totalPages         = 1;
+  let socket             = null;
+  let isModalOpen        = false;
+  let workspaces         = [];
+  let currentWorkspaceId = null; // null = All clips
 
   // ─── DOM refs ──────────────────────────────────────────────────────────────
   const clipsGrid       = document.getElementById('clipsGrid');
@@ -26,6 +28,7 @@
   // ─── Bootstrap ─────────────────────────────────────────────────────────────
   initNavbar();
   connectSocket();
+  loadWorkspaces();
   loadClips();
   setupPaste();
   setupDragDrop();
@@ -33,6 +36,7 @@
   setupModal();
   setupLoadMore();
   setupImageModal();
+  setupWorkspaceSidebar();
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
   // ─── Navbar ────────────────────────────────────────────────────────────────
@@ -53,16 +57,59 @@
 
     socket.on('clip:new', ({ data }) => {
       if (clips.some((c) => c._id === data._id)) return;
+
+      // Update workspace clip count badge in sidebar
+      if (data.workspace) {
+        const ws = workspaces.find((w) => w._id === data.workspace);
+        if (ws) {
+          ws.clipCount = (ws.clipCount || 0) + 1;
+          updateWorkspaceCountBadge(ws._id, ws.clipCount);
+        }
+      }
+
+      // Only show in grid if it belongs to the current view
+      const inView = currentWorkspaceId === null || data.workspace === currentWorkspaceId;
+      if (!inView) return;
+
       clips.unshift(data);
       prependClipCard(data, true);
       updateClipCount(clips.length);
     });
 
     socket.on('clip:deleted', ({ id }) => {
+      const deleted = clips.find((c) => c._id === id);
+      if (deleted?.workspace) {
+        const ws = workspaces.find((w) => w._id === deleted.workspace);
+        if (ws) {
+          ws.clipCount = Math.max(0, (ws.clipCount || 1) - 1);
+          updateWorkspaceCountBadge(ws._id, ws.clipCount);
+        }
+      }
       clips = clips.filter((c) => c._id !== id);
       document.querySelector(`.clip-card[data-id="${id}"]`)?.remove();
       updateClipCount(clips.length);
       if (clips.length === 0) emptyState.style.display = 'flex';
+    });
+
+    socket.on('workspace:new', ({ data }) => {
+      if (workspaces.some((w) => w._id === data._id)) return;
+      workspaces.push(data);
+      appendWorkspaceItem(data);
+    });
+
+    socket.on('workspace:updated', ({ data }) => {
+      const idx = workspaces.findIndex((w) => w._id === data._id);
+      if (idx === -1) return;
+      workspaces[idx] = { ...workspaces[idx], name: data.name };
+      const li = document.querySelector(`.ws-item[data-id="${data._id}"]`);
+      if (li) li.querySelector('.ws-item-name').textContent = data.name;
+      if (currentWorkspaceId === data._id) updateBoardTitle(data.name);
+    });
+
+    socket.on('workspace:deleted', ({ id }) => {
+      workspaces = workspaces.filter((w) => w._id !== id);
+      document.querySelector(`.ws-item[data-id="${id}"]`)?.remove();
+      if (currentWorkspaceId === id) selectWorkspace(null);
     });
   }
 
@@ -78,7 +125,7 @@
   async function loadClips(page = 1) {
     try {
       if (page === 1) loadingState.style.display = 'flex';
-      const { data, pagination } = await api.clips.list(page);
+      const { data, pagination } = await api.clips.list(page, currentWorkspaceId);
       currentPage = pagination.page;
       totalPages  = pagination.pages;
 
@@ -351,6 +398,7 @@
         fileName: file.name,
         mimeType: file.type || 'application/octet-stream',
         fileSize: file.size,
+        workspaceId: currentWorkspaceId,
       });
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
@@ -381,7 +429,7 @@
 
     showToast('Sharing…', 'info');
     try {
-      const { data } = await api.clips.create({ content: trimmed, type, language });
+      const { data } = await api.clips.create({ content: trimmed, type, language, workspaceId: currentWorkspaceId });
       // Socket will push it to everyone; we add locally for instant feedback
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
@@ -399,7 +447,7 @@
     showToast('Processing image…', 'info');
     try {
       const base64 = await compressImage(file);
-      const { data } = await api.clips.create({ content: base64, type: 'image' });
+      const { data } = await api.clips.create({ content: base64, type: 'image', workspaceId: currentWorkspaceId });
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
         prependClipCard(data, true);
@@ -511,7 +559,7 @@
     try {
       const type     = detectType(text);
       const language = type === 'code' ? detectLanguage(text) : null;
-      const { data } = await api.clips.create({ content: text, type, language });
+      const { data } = await api.clips.create({ content: text, type, language, workspaceId: currentWorkspaceId });
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
         prependClipCard(data, true);
@@ -552,6 +600,198 @@
   function openImageModal(src) {
     imageModalSrc.src = src;
     imageOverlay.classList.add('active');
+  }
+
+  // ─── Workspaces ────────────────────────────────────────────────────────────
+  async function loadWorkspaces() {
+    try {
+      const { data } = await api.workspaces.list();
+      workspaces = data;
+      const list = document.getElementById('wsList');
+      workspaces.forEach((ws) => appendWorkspaceItem(ws));
+    } catch (err) {
+      if (err.status === 401) logout();
+    }
+  }
+
+  function appendWorkspaceItem(ws) {
+    const list = document.getElementById('wsList');
+    const li = buildWorkspaceItem(ws);
+    list.appendChild(li);
+  }
+
+  function buildWorkspaceItem(ws) {
+    const isOwn = ws.ownerName === user.username;
+    const li = document.createElement('li');
+    li.className = 'ws-item';
+    li.dataset.id = ws._id;
+
+    li.innerHTML = `
+      <div class="ws-item-icon">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+        </svg>
+      </div>
+      <span class="ws-item-name">${escapeHtml(ws.name)}</span>
+      ${ws.clipCount ? `<span class="ws-item-count">${ws.clipCount}</span>` : '<span class="ws-item-count" style="display:none">0</span>'}
+      ${isOwn ? `
+      <div class="ws-item-actions">
+        <button class="ws-action-btn ws-rename-btn" title="Rename">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+        </button>
+        <button class="ws-action-btn ws-delete-btn" title="Delete">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+            <path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
+          </svg>
+        </button>
+      </div>` : ''}
+    `;
+
+    li.addEventListener('click', (e) => {
+      if (e.target.closest('.ws-action-btn')) return;
+      selectWorkspace(ws._id);
+    });
+
+    li.querySelector('.ws-rename-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      startRename(ws._id, li);
+    });
+
+    li.querySelector('.ws-delete-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteWorkspaceHandler(ws._id, ws.name);
+    });
+
+    return li;
+  }
+
+  function selectWorkspace(id) {
+    currentWorkspaceId = id;
+
+    // Update active state
+    document.querySelectorAll('.ws-item').forEach((el) => el.classList.remove('ws-item-active'));
+    const target = id
+      ? document.querySelector(`.ws-item[data-id="${id}"]`)
+      : document.getElementById('wsAllItem');
+    target?.classList.add('ws-item-active');
+
+    // Update board title
+    if (!id) {
+      updateBoardTitle('All clips');
+    } else {
+      const ws = workspaces.find((w) => w._id === id);
+      if (ws) updateBoardTitle(ws.name);
+    }
+
+    // Update empty state message
+    const emptyText = document.getElementById('emptyStateText');
+    if (emptyText) {
+      emptyText.textContent = id ? 'No clips in this workspace yet.' : 'No clips yet — be the first to share!';
+    }
+
+    // Reload clips for new view
+    currentPage = 1;
+    clips = [];
+    loadClips(1);
+  }
+
+  function updateBoardTitle(name) {
+    const title = document.getElementById('boardTitle');
+    if (title) {
+      const count = document.getElementById('clipCount');
+      title.textContent = name + ' ';
+      title.appendChild(count);
+    }
+  }
+
+  function updateWorkspaceCountBadge(wsId, count) {
+    const li = document.querySelector(`.ws-item[data-id="${wsId}"]`);
+    if (!li) return;
+    let badge = li.querySelector('.ws-item-count');
+    if (!badge) return;
+    badge.textContent = count;
+    badge.style.display = count > 0 ? '' : 'none';
+  }
+
+  function startRename(wsId, li) {
+    const nameEl = li.querySelector('.ws-item-name');
+    const ws = workspaces.find((w) => w._id === wsId);
+    if (!ws) return;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'ws-rename-input';
+    input.value = ws.name;
+    input.maxLength = 50;
+
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
+
+    async function commitRename() {
+      const newName = input.value.trim();
+      input.replaceWith(nameEl);
+      if (!newName || newName === ws.name) return;
+      try {
+        await api.workspaces.rename(wsId, newName);
+      } catch (err) {
+        showToast(err.message || 'Rename failed', 'error');
+      }
+    }
+
+    input.addEventListener('blur', commitRename);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { input.value = ws.name; input.blur(); }
+    });
+  }
+
+  async function deleteWorkspaceHandler(wsId, wsName) {
+    if (!confirm(`Delete workspace "${wsName}"?\n\nClips inside will be moved to All clips.`)) return;
+    try {
+      await api.workspaces.remove(wsId);
+    } catch (err) {
+      showToast(err.message || 'Delete failed', 'error');
+    }
+  }
+
+  function setupWorkspaceSidebar() {
+    document.getElementById('wsAllItem').addEventListener('click', () => selectWorkspace(null));
+    document.getElementById('addWorkspaceBtn').addEventListener('click', () => {
+      const form = document.getElementById('wsNewForm');
+      form.style.display = form.style.display === 'none' ? '' : 'none';
+      if (form.style.display !== 'none') document.getElementById('wsNewInput').focus();
+    });
+
+    document.getElementById('wsConfirmBtn').addEventListener('click', createWorkspaceFromForm);
+    document.getElementById('wsCancelBtn').addEventListener('click', () => {
+      document.getElementById('wsNewForm').style.display = 'none';
+      document.getElementById('wsNewInput').value = '';
+    });
+    document.getElementById('wsNewInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') createWorkspaceFromForm();
+      if (e.key === 'Escape') {
+        document.getElementById('wsNewForm').style.display = 'none';
+        document.getElementById('wsNewInput').value = '';
+      }
+    });
+  }
+
+  async function createWorkspaceFromForm() {
+    const input = document.getElementById('wsNewInput');
+    const name = input.value.trim();
+    if (!name) { showToast('Enter a workspace name', 'error'); return; }
+    try {
+      await api.workspaces.create(name);
+      input.value = '';
+      document.getElementById('wsNewForm').style.display = 'none';
+    } catch (err) {
+      showToast(err.message || 'Failed to create workspace', 'error');
+    }
   }
 
   // ─── Logout ────────────────────────────────────────────────────────────────
