@@ -31,6 +31,7 @@ const api = (() => {
         return request(`/api/clips?${params}`);
       },
       create: (body)     => request('/api/clips', { method: 'POST', body: JSON.stringify(body) }),
+      update: (id, body) => request(`/api/clips/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
       remove: (id)       => request(`/api/clips/${id}`, { method: 'DELETE' }),
     },
     workspaces: {

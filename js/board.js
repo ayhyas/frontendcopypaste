@@ -58,7 +58,6 @@
     socket.on('clip:new', ({ data }) => {
       if (clips.some((c) => c._id === data._id)) return;
 
-      // Update workspace clip count badge in sidebar
       if (data.workspace) {
         const ws = workspaces.find((w) => w._id === data.workspace);
         if (ws) {
@@ -67,13 +66,22 @@
         }
       }
 
-      // Only show in grid if it belongs to the current view
       const inView = currentWorkspaceId === null || data.workspace === currentWorkspaceId;
       if (!inView) return;
 
       clips.unshift(data);
-      prependClipCard(data, true);
+      prependClipCard(data);
       updateClipCount(clips.length);
+    });
+
+    socket.on('clip:updated', ({ data }) => {
+      const idx = clips.findIndex((c) => c._id === data._id);
+      if (idx !== -1) clips[idx] = { ...clips[idx], ...data };
+      const existing = document.querySelector(`.clip-card[data-id="${data._id}"]`);
+      if (!existing) return;
+      const updated = buildCard(clips[idx] || data);
+      existing.replaceWith(updated);
+      Prism.highlightAllUnder(updated);
     });
 
     socket.on('clip:deleted', ({ id }) => {
@@ -124,7 +132,7 @@
   // ─── Load clips ────────────────────────────────────────────────────────────
   async function loadClips(page = 1) {
     try {
-      if (page === 1) loadingState.style.display = 'flex';
+      if (page === 1) showSkeletons();
       const { data, pagination } = await api.clips.list(page, currentWorkspaceId);
       currentPage = pagination.page;
       totalPages  = pagination.pages;
@@ -134,17 +142,43 @@
         renderAllClips();
       } else {
         clips = [...clips, ...data];
-        data.forEach((clip) => prependClipCard(clip, false, true));
+        data.forEach((clip) => appendClipCard(clip));
       }
 
       updateClipCount(pagination.total);
       loadMoreWrapper.style.display = pagination.hasMore ? 'flex' : 'none';
     } catch (err) {
       if (err.status === 401) return logout();
+      clipsGrid.innerHTML = '';
       showToast('Failed to load clips', 'error');
-    } finally {
-      loadingState.style.display = 'none';
     }
+  }
+
+  function showSkeletons() {
+    clipsGrid.innerHTML = '';
+    emptyState.style.display = 'none';
+    loadingState.style.display = 'none';
+    for (let i = 0; i < 6; i++) clipsGrid.appendChild(buildSkeletonCard());
+  }
+
+  function buildSkeletonCard() {
+    const d = document.createElement('div');
+    d.className = 'clip-card skeleton-card';
+    d.innerHTML = `
+      <div class="sk-header">
+        <div class="sk-pill sk-block"></div>
+        <div class="sk-line sk-short sk-block"></div>
+      </div>
+      <div class="sk-body">
+        <div class="sk-line sk-block"></div>
+        <div class="sk-line sk-block"></div>
+        <div class="sk-line sk-medium sk-block"></div>
+      </div>
+      <div class="sk-footer">
+        <div class="sk-circle sk-block"></div>
+        <div class="sk-line sk-short sk-block"></div>
+      </div>`;
+    return d;
   }
 
   function renderAllClips() {
@@ -154,21 +188,28 @@
       return;
     }
     emptyState.style.display = 'none';
-    clips.forEach((clip) => clipsGrid.appendChild(buildCard(clip)));
+    clips.forEach((clip, i) => {
+      const card = buildCard(clip);
+      card.classList.add('card-appear');
+      card.style.animationDelay = `${i < 8 ? i * 45 : 8 * 45}ms`;
+      clipsGrid.appendChild(card);
+    });
     Prism.highlightAllUnder(clipsGrid);
   }
 
-  function prependClipCard(clip, animate = false, append = false) {
+  function prependClipCard(clip) {
     emptyState.style.display = 'none';
     const card = buildCard(clip);
-    if (animate) card.classList.add('clip-enter');
-    if (append) {
-      clipsGrid.appendChild(card);
-    } else {
-      clipsGrid.prepend(card);
-    }
+    card.classList.add('card-appear');
+    clipsGrid.prepend(card);
     Prism.highlightAllUnder(card);
-    if (animate) requestAnimationFrame(() => requestAnimationFrame(() => card.classList.add('clip-enter-active')));
+  }
+
+  function appendClipCard(clip) {
+    const card = buildCard(clip);
+    card.classList.add('card-appear');
+    clipsGrid.appendChild(card);
+    Prism.highlightAllUnder(card);
   }
 
   function updateClipCount(total) {
@@ -190,6 +231,19 @@
           ${clip.language ? `<span class="lang-badge">${clip.language}</span>` : ''}
         </div>
         <time class="clip-time" datetime="${clip.createdAt}" title="${new Date(clip.createdAt).toLocaleString()}">${timeAgo(clip.createdAt)}</time>
+      </div>
+
+      <div class="clip-title-row ${clip.title ? 'has-title' : ''} ${isOwn ? 'is-own' : ''}">
+        ${clip.title
+          ? `<span class="clip-title-text">${escapeHtml(clip.title)}</span>`
+          : `<span class="clip-title-placeholder">Add a title…</span>`}
+        ${isOwn ? `
+        <button class="clip-title-edit-btn" title="Edit title">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+        </button>` : ''}
       </div>
 
       <div class="clip-body">
@@ -234,8 +288,55 @@
     if (clip.type === 'image') {
       div.querySelector('.clip-image')?.addEventListener('click', () => openImageModal(clip.content));
     }
+    if (isOwn) {
+      div.querySelector('.clip-title-edit-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        startTitleEdit(clip, div.querySelector('.clip-title-row'));
+      });
+    }
 
     return div;
+  }
+
+  function startTitleEdit(clip, row) {
+    const textEl = row.querySelector('.clip-title-text, .clip-title-placeholder');
+    const currentTitle = clip.title || '';
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'clip-title-inline-input';
+    input.value = currentTitle;
+    input.maxLength = 100;
+    input.placeholder = 'Add a title…';
+
+    textEl.replaceWith(input);
+    input.focus();
+    if (currentTitle) input.select();
+
+    let saved = false;
+    async function commit() {
+      if (saved) return;
+      saved = true;
+      const newTitle = input.value.trim();
+      if (newTitle === currentTitle) {
+        // No change — socket won't fire, restore manually
+        input.replaceWith(textEl);
+        return;
+      }
+      try {
+        await api.clips.update(clip._id, { title: newTitle });
+        // clip:updated socket event will re-render the card
+      } catch (err) {
+        input.replaceWith(textEl);
+        showToast(err.message || 'Could not save title', 'error');
+      }
+    }
+
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter')  { e.preventDefault(); input.blur(); }
+      if (e.key === 'Escape') { saved = true; input.replaceWith(textEl); }
+    });
   }
 
   function renderContent(clip) {
@@ -543,6 +644,7 @@
     isModalOpen = false;
     modalOverlay.classList.remove('active');
     clipTextarea.value = '';
+    document.getElementById('clipTitleInput').value = '';
     const btn = document.getElementById('modalSubmitBtn');
     btn.disabled = false;
     btn.classList.remove('loading');
@@ -559,7 +661,8 @@
     try {
       const type     = detectType(text);
       const language = type === 'code' ? detectLanguage(text) : null;
-      const { data } = await api.clips.create({ content: text, type, language, workspaceId: currentWorkspaceId });
+      const title    = document.getElementById('clipTitleInput').value.trim() || null;
+      const { data } = await api.clips.create({ content: text, type, language, title, workspaceId: currentWorkspaceId });
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
         prependClipCard(data, true);
