@@ -55,14 +55,37 @@
       </div>
       <div class="paste-hero-text">
         <h2>Press <kbd>Ctrl</kbd><span>+</span><kbd>V</kbd> anywhere to share</h2>
-        <p>Paste text, code, images, or links — visible to everyone instantly</p>
+        <p>Paste text, code, images, links, or files — drag &amp; drop files anywhere</p>
       </div>
-      <button class="btn-new-clip" id="newClipBtn">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        Write clip
-      </button>
+      <div class="paste-hero-actions">
+        <button class="btn-new-clip" id="newClipBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          Write clip
+        </button>
+        <button class="btn-upload-file" id="uploadFileBtn" title="Upload a file">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+            <polyline points="17 8 12 3 7 8"/>
+            <line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          Upload file
+        </button>
+      </div>
+      <input type="file" id="fileInput" hidden multiple />
+    </div>
+  </div>
+
+  <!-- ─── Drag-and-drop overlay ───────────────────────────────────────── -->
+  <div class="drag-drop-overlay" id="dragDropOverlay">
+    <div class="drag-drop-inner">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+        <polyline points="17 8 12 3 7 8"/>
+        <line x1="12" y1="3" x2="12" y2="15"/>
+      </svg>
+      <p>Drop files to share</p>
     </div>
   </div>
 

@@ -28,6 +28,8 @@
   connectSocket();
   loadClips();
   setupPaste();
+  setupDragDrop();
+  setupFileUpload();
   setupModal();
   setupLoadMore();
   setupImageModal();
@@ -153,10 +155,16 @@
           <span class="author-name">${escapeHtml(clip.authorName)}</span>
         </div>
         <div class="clip-actions">
-          <button class="action-btn copy-btn" data-id="${clip._id}" title="Copy to clipboard">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-            </svg>
+          <button class="action-btn copy-btn" data-id="${clip._id}" title="${clip.type === 'file' ? 'Download file' : 'Copy to clipboard'}">
+            ${clip.type === 'file'
+              ? `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                   <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                   <polyline points="7 10 12 15 17 10"/>
+                   <line x1="12" y1="15" x2="12" y2="3"/>
+                 </svg>`
+              : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                   <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                 </svg>`}
           </button>
           ${isOwn ? `
           <button class="action-btn delete-btn" data-id="${clip._id}" title="Delete clip">
@@ -187,6 +195,27 @@
     switch (clip.type) {
       case 'image':
         return `<div class="image-preview"><img class="clip-image" src="${clip.content}" alt="Shared image" loading="lazy" /></div>`;
+
+      case 'file': {
+        const ext = (clip.fileName || '').split('.').pop().toLowerCase();
+        const size = clip.fileSize ? formatFileSize(clip.fileSize) : '';
+        const { svg, colorClass } = getFileIcon(clip.mimeType, ext);
+        return `
+          <div class="file-preview">
+            <div class="file-icon-wrap ${colorClass}">${svg}</div>
+            <div class="file-info">
+              <span class="file-name">${escapeHtml(clip.fileName || 'Unknown file')}</span>
+              ${size ? `<span class="file-size">${size}</span>` : ''}
+            </div>
+            <a class="file-download-btn" href="${clip.content}" download="${escapeHtml(clip.fileName || 'file')}" title="Download file">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </a>
+          </div>`;
+      }
 
       case 'code': {
         const lang = clip.language || 'javascript';
@@ -222,6 +251,19 @@
       if (isModalOpen) return;
       e.preventDefault();
 
+      // Files pasted from OS (e.g. file manager copy on browsers that support it)
+      const pastedFiles = Array.from(e.clipboardData.files);
+      if (pastedFiles.length > 0) {
+        for (const file of pastedFiles) {
+          if (file.type.startsWith('image/')) {
+            await handleImagePaste(file);
+          } else {
+            await handleFilePaste(file);
+          }
+        }
+        return;
+      }
+
       const items = Array.from(e.clipboardData.items);
       const imageItem = items.find((i) => i.type.startsWith('image/'));
 
@@ -232,6 +274,102 @@
 
       const text = e.clipboardData.getData('text');
       if (text) await handleTextPaste(text);
+    });
+  }
+
+  // ─── Drag and drop ──────────────────────────────────────────────────────────
+  function setupDragDrop() {
+    let dragDepth = 0;
+    const overlay = document.getElementById('dragDropOverlay');
+
+    document.addEventListener('dragenter', (e) => {
+      if (!e.dataTransfer.types.includes('Files')) return;
+      dragDepth++;
+      overlay.classList.add('active');
+    });
+
+    document.addEventListener('dragleave', () => {
+      dragDepth--;
+      if (dragDepth <= 0) {
+        dragDepth = 0;
+        overlay.classList.remove('active');
+      }
+    });
+
+    document.addEventListener('dragover', (e) => {
+      e.preventDefault();
+    });
+
+    document.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      dragDepth = 0;
+      overlay.classList.remove('active');
+      if (isModalOpen) return;
+
+      const files = Array.from(e.dataTransfer.files);
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          await handleImagePaste(file);
+        } else {
+          await handleFilePaste(file);
+        }
+      }
+    });
+  }
+
+  // ─── File upload button ─────────────────────────────────────────────────────
+  function setupFileUpload() {
+    const fileInput = document.getElementById('fileInput');
+    document.getElementById('uploadFileBtn').addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', async () => {
+      const files = Array.from(fileInput.files);
+      for (const file of files) {
+        if (file.type.startsWith('image/')) {
+          await handleImagePaste(file);
+        } else {
+          await handleFilePaste(file);
+        }
+      }
+      fileInput.value = '';
+    });
+  }
+
+  async function handleFilePaste(file) {
+    const MAX_FILE_BYTES = 9 * 1024 * 1024; // ~9 MB binary → ~12 MB base64
+    if (file.size > MAX_FILE_BYTES) {
+      showToast(`"${file.name}" is too large (max 9 MB)`, 'error');
+      return;
+    }
+
+    showToast(`Uploading "${file.name}"…`, 'info');
+    try {
+      const base64 = await fileToBase64(file);
+      const { data } = await api.clips.create({
+        content: base64,
+        type: 'file',
+        fileName: file.name,
+        mimeType: file.type || 'application/octet-stream',
+        fileSize: file.size,
+      });
+      if (!clips.some((c) => c._id === data._id)) {
+        clips.unshift(data);
+        prependClipCard(data, true);
+        updateClipCount(clips.length);
+      }
+      showToast(`"${file.name}" shared!`, 'success');
+    } catch (err) {
+      if (err.status === 401) return logout();
+      showToast(err.message || `Failed to share "${file.name}"`, 'error');
+    }
+  }
+
+  function fileToBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error('Failed to read file'));
+      reader.readAsDataURL(file);
     });
   }
 
@@ -277,6 +415,14 @@
   // ─── Clip actions ──────────────────────────────────────────────────────────
   async function copyClip(clip) {
     try {
+      if (clip.type === 'file') {
+        const a = document.createElement('a');
+        a.href = clip.content;
+        a.download = clip.fileName || 'file';
+        a.click();
+        showToast('Download started', 'success');
+        return;
+      }
       if (clip.type === 'image') {
         await copyImageToClipboard(clip.content);
       } else {
@@ -515,6 +661,32 @@
     if (/^(package main|func |import \()/m.test(t))                   return 'go';
     if (/^(fn |pub |use |struct |impl )/m.test(t))                    return 'rust';
     return 'javascript';
+  }
+
+  // ─── File helpers ──────────────────────────────────────────────────────────
+  function formatFileSize(bytes) {
+    if (bytes < 1024)            return `${bytes} B`;
+    if (bytes < 1024 * 1024)    return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function getFileIcon(mimeType, ext) {
+    const mime = mimeType || '';
+    const fileSvg = (lines) => `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>${lines}</svg>`;
+
+    if (ext === 'pdf' || mime === 'application/pdf') {
+      return { colorClass: 'file-icon-pdf', svg: fileSvg('<line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="12" y2="17"/>') };
+    }
+    if (['doc', 'docx'].includes(ext) || mime.includes('word')) {
+      return { colorClass: 'file-icon-word', svg: fileSvg('<line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/>') };
+    }
+    if (['xls', 'xlsx', 'csv'].includes(ext) || mime.includes('spreadsheet') || mime.includes('excel')) {
+      return { colorClass: 'file-icon-excel', svg: fileSvg('<polyline points="9 13 12 16 15 13"/><line x1="12" y1="16" x2="12" y2="10"/>') };
+    }
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext) || mime.includes('zip') || mime.includes('compressed')) {
+      return { colorClass: 'file-icon-zip', svg: fileSvg('<line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="15" x2="12" y2="15"/>') };
+    }
+    return { colorClass: '', svg: fileSvg('') };
   }
 
   // ─── Utils ─────────────────────────────────────────────────────────────────
