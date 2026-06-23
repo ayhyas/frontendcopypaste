@@ -950,6 +950,12 @@ pre[class*="language-"] {
   object-fit: contain;
   display: block;
 }
+#liveFallbackImg {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  display: none;
+}
 .live-connecting {
   position: absolute; inset: 0;
   display: flex; flex-direction: column;

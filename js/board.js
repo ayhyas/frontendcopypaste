@@ -22,6 +22,11 @@
   let activeBroadcasterId   = null;
   let activeBroadcasterName = null;
   let connectingTimer       = null; // viewer connection timeout
+  let isFallbackViewing     = false;// using canvas-frame path instead of WebRTC
+  let frameInterval         = null; // broadcaster: setInterval for JPEG capture
+  let frameCanvas           = null;
+  let frameCtx              = null;
+  let frameVideo            = null;
 
   const ICE_CONFIG = {
     iceServers: [
@@ -262,6 +267,18 @@
           pendingIceCandidates.push(ice);
         }
       }
+    });
+
+    // Canvas-frame fallback: start capture when a fallback viewer joins
+    socket.on('screen:fallback-viewer', () => {
+      if (isBroadcasting && localStream && !frameInterval) startFrameCapture();
+    });
+
+    // Viewer receives JPEG frame from broadcaster
+    socket.on('screen:frame', ({ frame }) => {
+      if (!isFallbackViewing) return;
+      document.getElementById('liveFallbackImg').src = frame;
+      document.getElementById('liveConnecting').style.display = 'none';
     });
   }
 
@@ -1105,6 +1122,7 @@
 
   function stopBroadcasting() {
     if (!isBroadcasting) return;
+    stopFrameCapture();
     localStream?.getTracks().forEach((t) => t.stop());
     localStream    = null;
     isBroadcasting = false;
@@ -1114,6 +1132,45 @@
 
     socket.emit('screen:stop');
     setBroadcastingUI(false);
+  }
+
+  function startFrameCapture() {
+    if (frameInterval || !localStream) return;
+
+    frameVideo = document.createElement('video');
+    frameVideo.srcObject = localStream;
+    frameVideo.muted = true;
+    frameVideo.setAttribute('playsinline', '');
+    frameVideo.play().catch(() => {});
+
+    frameCanvas = document.createElement('canvas');
+    frameCtx    = frameCanvas.getContext('2d');
+
+    frameVideo.onloadedmetadata = () => {
+      // Cap at 960 wide to keep frame size sane (≈30–60 KB/frame at JPEG 50%)
+      const MAX = 960;
+      let w = frameVideo.videoWidth  || 1280;
+      let h = frameVideo.videoHeight || 720;
+      if (w > MAX) { h = Math.round(h * MAX / w); w = MAX; }
+      frameCanvas.width  = w;
+      frameCanvas.height = h;
+
+      frameInterval = setInterval(() => {
+        if (!localStream) { stopFrameCapture(); return; }
+        try {
+          frameCtx.drawImage(frameVideo, 0, 0, w, h);
+          socket.emit('screen:frame', { frame: frameCanvas.toDataURL('image/jpeg', 0.5) });
+        } catch {}
+      }, 250); // 4 fps — low enough to stay well under Socket.io's limits
+    };
+  }
+
+  function stopFrameCapture() {
+    clearInterval(frameInterval);
+    frameInterval = null;
+    if (frameVideo) { frameVideo.pause(); frameVideo.srcObject = null; frameVideo = null; }
+    frameCanvas = null;
+    frameCtx    = null;
   }
 
   function setBroadcastingUI(active) {
@@ -1132,14 +1189,17 @@
   }
 
   async function startViewing() {
-    if (viewerPc) stopViewing();
+    if (viewerPc || isFallbackViewing) stopViewing();
     if (!activeBroadcasterId) return;
 
+    openLiveOverlay();
+
+    // Old browsers without WebRTC → skip straight to canvas frames
+    const hasWebRTC = !!(window.RTCPeerConnection || window.webkitRTCPeerConnection || window.mozRTCPeerConnection);
+    if (!hasWebRTC) { startFallbackViewing(); return; }
+
     let pc;
-    try { pc = createPeerConnection(); } catch {
-      showToast('WebRTC is not supported in this browser', 'error');
-      return;
-    }
+    try { pc = createPeerConnection(); } catch { startFallbackViewing(); return; }
 
     pendingIceCandidates = [];
     viewerPc = pc;
@@ -1159,21 +1219,41 @@
       }
       if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
         clearTimeout(connectingTimer);
-        showToast('Stream connection lost', 'error');
-        stopViewing();
+        // If video never started (NAT failure etc.) → switch to canvas fallback silently
+        const vid = document.getElementById('liveVideo');
+        if (!vid.srcObject) {
+          viewerPc = null;
+          pc.close();
+          startFallbackViewing();
+        } else {
+          showToast('Stream connection lost', 'error');
+          stopViewing();
+        }
       }
     };
 
-    openLiveOverlay();
     socket.emit('screen:join', { broadcasterId: activeBroadcasterId });
 
-    // Give up after 20 s if WebRTC never connects
+    // 10 s timeout — fall back to canvas frames rather than showing an error
     connectingTimer = setTimeout(() => {
       if (viewerPc && viewerPc.connectionState !== 'connected') {
-        showToast('Could not connect to the stream — check your network and try again', 'error');
-        stopViewing();
+        viewerPc.close();
+        viewerPc = null;
+        pendingIceCandidates = [];
+        startFallbackViewing();
       }
-    }, 20000);
+    }, 10000);
+  }
+
+  function startFallbackViewing() {
+    if (!activeBroadcasterId) return;
+    clearTimeout(connectingTimer);
+    isFallbackViewing = true;
+    // Show img instead of video
+    document.getElementById('liveVideo').style.display = 'none';
+    document.getElementById('liveFallbackImg').style.display = 'block';
+    document.getElementById('liveConnecting').style.display = 'flex';
+    socket.emit('screen:watch-fallback', { broadcasterId: activeBroadcasterId });
   }
 
   function stopViewing() {
@@ -1181,6 +1261,15 @@
     viewerPc?.close();
     viewerPc = null;
     pendingIceCandidates = [];
+
+    if (isFallbackViewing) {
+      isFallbackViewing = false;
+      socket.emit('screen:leave-fallback', { broadcasterId: activeBroadcasterId });
+      const img = document.getElementById('liveFallbackImg');
+      img.src = '';
+      img.style.display = 'none';
+      document.getElementById('liveVideo').style.display = '';
+    }
 
     const vid = document.getElementById('liveVideo');
     if (vid.srcObject) {
@@ -1218,6 +1307,10 @@
     document.getElementById('liveOverlayLabel').textContent =
       activeBroadcasterName ? `${activeBroadcasterName}'s screen` : 'Screen share';
     document.getElementById('liveConnecting').style.display = 'flex';
+
+    // Reset to video mode (fallback will switch to img if needed)
+    document.getElementById('liveVideo').style.display = '';
+    document.getElementById('liveFallbackImg').style.display = 'none';
 
     // Always start muted (avoids autoplay-with-audio block on Safari/Firefox)
     const vid = document.getElementById('liveVideo');
