@@ -13,6 +13,23 @@
   let workspaces         = [];
   let currentWorkspaceId = null; // null = All clips
 
+  // Screen share state
+  let isBroadcasting       = false;
+  let localStream          = null;
+  let peerConnections      = {};   // viewerId → RTCPeerConnection (broadcaster side)
+  let viewerPc             = null; // RTCPeerConnection (viewer side)
+  let pendingIceCandidates = [];   // queued before remote description is set
+  let activeBroadcasterId  = null;
+  let activeBroadcasterName = null;
+
+  const ICE_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+    ],
+  };
+
   // ─── DOM refs ──────────────────────────────────────────────────────────────
   const clipsGrid       = document.getElementById('clipsGrid');
   const emptyState      = document.getElementById('emptyState');
@@ -37,6 +54,7 @@
   setupLoadMore();
   setupImageModal();
   setupWorkspaceSidebar();
+  setupScreenShare();
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
   // ─── Navbar ────────────────────────────────────────────────────────────────
@@ -118,6 +136,81 @@
       workspaces = workspaces.filter((w) => w._id !== id);
       document.querySelector(`.ws-item[data-id="${id}"]`)?.remove();
       if (currentWorkspaceId === id) selectWorkspace(null);
+    });
+
+    // ─── Screen share signaling ─────────────────────────────────────────────
+    socket.on('screen:available', ({ socketId, username }) => {
+      activeBroadcasterId  = socketId;
+      activeBroadcasterName = username;
+      if (!isBroadcasting) showLiveBanner(username);
+    });
+
+    socket.on('screen:ended', () => {
+      activeBroadcasterId  = null;
+      activeBroadcasterName = null;
+      hideLiveBanner();
+      stopViewing();
+    });
+
+    // Broadcaster: a viewer wants to connect
+    socket.on('screen:viewer-joined', async ({ viewerId }) => {
+      if (!isBroadcasting || !localStream) return;
+      const pc = new RTCPeerConnection(ICE_CONFIG);
+      peerConnections[viewerId] = pc;
+
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) socket.emit('screen:ice', { targetId: viewerId, candidate });
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+          pc.close();
+          delete peerConnections[viewerId];
+          updateViewerCount();
+        }
+      };
+
+      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('screen:offer', { viewerId, offer: pc.localDescription });
+      updateViewerCount();
+    });
+
+    // Broadcaster: viewer answered
+    socket.on('screen:answer', async ({ viewerId, answer }) => {
+      try {
+        await peerConnections[viewerId]?.setRemoteDescription(new RTCSessionDescription(answer));
+      } catch {}
+    });
+
+    // Viewer: broadcaster sent offer
+    socket.on('screen:offer', async ({ broadcasterId, offer }) => {
+      if (!viewerPc) return;
+      try {
+        await viewerPc.setRemoteDescription(new RTCSessionDescription(offer));
+        for (const c of pendingIceCandidates) {
+          await viewerPc.addIceCandidate(c).catch(() => {});
+        }
+        pendingIceCandidates = [];
+        const answer = await viewerPc.createAnswer();
+        await viewerPc.setLocalDescription(answer);
+        socket.emit('screen:answer', { broadcasterId, answer: viewerPc.localDescription });
+      } catch {}
+    });
+
+    // ICE candidates — both directions
+    socket.on('screen:ice', ({ fromId, candidate }) => {
+      if (isBroadcasting) {
+        peerConnections[fromId]?.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+      } else if (viewerPc) {
+        if (viewerPc.remoteDescription) {
+          viewerPc.addIceCandidate(new RTCIceCandidate(candidate)).catch(() => {});
+        } else {
+          pendingIceCandidates.push(new RTCIceCandidate(candidate));
+        }
+      }
     });
   }
 
@@ -897,8 +990,156 @@
     }
   }
 
+  // ─── Screen share ──────────────────────────────────────────────────────────
+  function setupScreenShare() {
+    const btn = document.getElementById('shareScreenBtn');
+
+    // Hide button if browser doesn't support getDisplayMedia
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      btn.style.display = 'none';
+      return;
+    }
+
+    btn.addEventListener('click', () => {
+      if (isBroadcasting) stopBroadcasting();
+      else startBroadcasting();
+    });
+
+    document.getElementById('watchLiveBtn').addEventListener('click', () => {
+      hideLiveBanner();
+      startViewing();
+    });
+    document.getElementById('liveBannerDismiss').addEventListener('click', hideLiveBanner);
+    document.getElementById('liveCloseBtn').addEventListener('click', stopViewing);
+    document.getElementById('liveFullscreenBtn').addEventListener('click', () => {
+      const vid = document.getElementById('liveVideo');
+      (vid.requestFullscreen || vid.webkitRequestFullscreen).call(vid);
+    });
+
+    const liveVideo = document.getElementById('liveVideo');
+    liveVideo.addEventListener('playing', () => {
+      document.getElementById('liveConnecting').style.display = 'none';
+    });
+  }
+
+  async function startBroadcasting() {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: { frameRate: { ideal: 30, max: 30 }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: true,
+      });
+
+      localStream   = stream;
+      isBroadcasting = true;
+
+      // Browser's built-in "Stop sharing" button
+      stream.getVideoTracks()[0].addEventListener('ended', stopBroadcasting);
+
+      socket.emit('screen:start', { username: user.username });
+      setBroadcastingUI(true);
+    } catch (err) {
+      if (err.name !== 'NotAllowedError') showToast('Could not capture screen', 'error');
+    }
+  }
+
+  function stopBroadcasting() {
+    if (!isBroadcasting) return;
+    localStream?.getTracks().forEach((t) => t.stop());
+    localStream    = null;
+    isBroadcasting = false;
+
+    Object.values(peerConnections).forEach((pc) => pc.close());
+    peerConnections = {};
+
+    socket.emit('screen:stop');
+    setBroadcastingUI(false);
+  }
+
+  function setBroadcastingUI(active) {
+    const btn   = document.getElementById('shareScreenBtn');
+    const label = document.getElementById('shareScreenLabel');
+    btn.classList.toggle('btn-share-screen--live', active);
+    label.textContent = active ? 'Stop sharing' : 'Share screen';
+  }
+
+  function updateViewerCount() {
+    const count = Object.keys(peerConnections).length;
+    const label = document.getElementById('shareScreenLabel');
+    if (isBroadcasting) {
+      label.textContent = count > 0 ? `Stop sharing · ${count} watching` : 'Stop sharing';
+    }
+  }
+
+  async function startViewing() {
+    if (viewerPc) stopViewing();
+    if (!activeBroadcasterId) return;
+
+    pendingIceCandidates = [];
+
+    const pc = new RTCPeerConnection(ICE_CONFIG);
+    viewerPc = pc;
+
+    pc.ontrack = ({ streams }) => {
+      const vid = document.getElementById('liveVideo');
+      vid.srcObject = streams[0];
+    };
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) socket.emit('screen:ice', { targetId: activeBroadcasterId, candidate });
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === 'failed') {
+        showToast('Stream connection lost', 'error');
+        stopViewing();
+      }
+    };
+
+    openLiveOverlay();
+    socket.emit('screen:join', { broadcasterId: activeBroadcasterId });
+  }
+
+  function stopViewing() {
+    viewerPc?.close();
+    viewerPc = null;
+    pendingIceCandidates = [];
+
+    const vid = document.getElementById('liveVideo');
+    if (vid.srcObject) { vid.srcObject.getTracks().forEach((t) => t.stop()); vid.srcObject = null; }
+
+    closeLiveOverlay();
+  }
+
+  function showLiveBanner(username) {
+    const banner = document.getElementById('liveBanner');
+    document.getElementById('liveBannerText').textContent = `${username} is sharing their screen`;
+    banner.style.display = 'flex';
+    banner.classList.remove('live-banner--dismissed');
+  }
+
+  function hideLiveBanner() {
+    document.getElementById('liveBanner').style.display = 'none';
+  }
+
+  function openLiveOverlay() {
+    const overlay = document.getElementById('liveOverlay');
+    document.getElementById('liveOverlayLabel').textContent =
+      activeBroadcasterName ? `${activeBroadcasterName}'s screen` : 'Screen share';
+    document.getElementById('liveConnecting').style.display = 'flex';
+    overlay.style.display = 'flex';
+    requestAnimationFrame(() => overlay.classList.add('live-overlay--visible'));
+  }
+
+  function closeLiveOverlay() {
+    const overlay = document.getElementById('liveOverlay');
+    overlay.classList.remove('live-overlay--visible');
+    overlay.addEventListener('transitionend', () => { overlay.style.display = 'none'; }, { once: true });
+  }
+
   // ─── Logout ────────────────────────────────────────────────────────────────
   function logout() {
+    if (isBroadcasting) stopBroadcasting();
+    stopViewing();
     localStorage.removeItem('cs_token');
     localStorage.removeItem('cs_user');
     socket?.disconnect();

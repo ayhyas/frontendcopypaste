@@ -72,6 +72,13 @@
           </svg>
           Upload file
         </button>
+        <button class="btn-share-screen" id="shareScreenBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <path d="M8 21h8M12 17v4"/>
+          </svg>
+          <span id="shareScreenLabel">Share screen</span>
+        </button>
       </div>
       <input type="file" id="fileInput" hidden multiple />
     </div>
@@ -126,6 +133,28 @@
 
     <!-- ─── Main content ─────────────────────────────────────────────── -->
     <main class="board-main">
+
+      <!-- Live banner (appears when someone is sharing) -->
+      <div class="live-banner" id="liveBanner" style="display:none">
+        <span class="live-pill">
+          <span class="live-dot"></span>LIVE
+        </span>
+        <span class="live-banner-text" id="liveBannerText">Someone is sharing their screen</span>
+        <div class="live-banner-actions">
+          <button class="btn-watch-live" id="watchLiveBtn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <polygon points="5 3 19 12 5 21 5 3"/>
+            </svg>
+            Watch
+          </button>
+          <button class="live-banner-dismiss" id="liveBannerDismiss" title="Dismiss">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
       <div class="board-header">
         <h3 class="board-title" id="boardTitle">All clips <span class="clip-count" id="clipCount"></span></h3>
       </div>
@@ -204,6 +233,38 @@
         </svg>
       </button>
       <img id="imageModalSrc" src="" alt="Full size preview" />
+    </div>
+  </div>
+
+  <!-- ─── Live screen viewer ───────────────────────────────────────── -->
+  <div class="live-overlay" id="liveOverlay" style="display:none">
+    <div class="live-overlay-bar">
+      <div class="live-overlay-bar-left">
+        <span class="live-pill">
+          <span class="live-dot"></span>LIVE
+        </span>
+        <span class="live-overlay-label" id="liveOverlayLabel">Screen share</span>
+      </div>
+      <div class="live-overlay-bar-right">
+        <button class="live-ctrl-btn" id="liveFullscreenBtn" title="Fullscreen">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
+            <line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>
+          </svg>
+        </button>
+        <button class="live-ctrl-btn live-ctrl-close" id="liveCloseBtn" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="live-video-wrap">
+      <video id="liveVideo" autoplay playsinline></video>
+      <div class="live-connecting" id="liveConnecting">
+        <div class="loader"></div>
+        <p>Connecting…</p>
+      </div>
     </div>
   </div>
 
