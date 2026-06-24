@@ -14,10 +14,11 @@
   let activeStyle = { stroke: '#e2e8f0', fill: 'none', width: 2, dash: false, fontSize: 20 };
   const BG_COLOR  = '#0b0b16';
   let vp          = { x: 0, y: 0, s: 1 };
-  let drawing     = null;
-  let selected    = null;
-  let dragOrigin  = null;
-  let panOrigin   = null;
+  let drawing      = null;
+  let selected     = null;
+  let dragOrigin   = null;
+  let resizeHandle = null; // { handleId, originDx, originDy, snap }
+  let panOrigin    = null;
   let spaceDown   = false;
   let isDown      = false;
   let isOpen      = false;
@@ -117,11 +118,11 @@
   }
 
   function undo() {
-    if (histIdx > 0) { histIdx--; elements = JSON.parse(history[histIdx]); selected = null; render(); }
+    if (histIdx > 0) { histIdx--; elements = JSON.parse(history[histIdx]); selected = null; resizeHandle = null; dragOrigin = null; render(); }
   }
 
   function redo() {
-    if (histIdx < history.length - 1) { histIdx++; elements = JSON.parse(history[histIdx]); selected = null; render(); }
+    if (histIdx < history.length - 1) { histIdx++; elements = JSON.parse(history[histIdx]); selected = null; resizeHandle = null; dragOrigin = null; render(); }
   }
 
   /* ─── ID ──────────────────────────────────────────────────────────────────── */
@@ -336,19 +337,121 @@
     return Math.hypot(px - ax - t * dx, py - ay - t * dy);
   }
 
-  /* ─── Selection box ───────────────────────────────────────────────────────── */
+  /* ─── Selection box & resize handles ─────────────────────────────────────── */
+  const HANDLE_R   = 5;  // draw radius (screen px)
+  const HANDLE_HIT = 9;  // hit tolerance (screen px)
+
+  function getHandles(el) {
+    if (el.type === 'line' || el.type === 'arrow') {
+      return [
+        { id: 'p1', sx: el.x  * vp.s + vp.x, sy: el.y  * vp.s + vp.y },
+        { id: 'p2', sx: el.x2 * vp.s + vp.x, sy: el.y2 * vp.s + vp.y },
+      ];
+    }
+    const b   = bounds(el);
+    const pad = 8 / vp.s;
+    const x1  = (b.x - pad)                  * vp.s + vp.x;
+    const y1  = (b.y - pad)                  * vp.s + vp.y;
+    const x2  = (b.x + Math.abs(b.w) + pad)  * vp.s + vp.x;
+    const y2  = (b.y + Math.abs(b.h) + pad)  * vp.s + vp.y;
+    const xm  = (x1 + x2) / 2;
+    const ym  = (y1 + y2) / 2;
+    return [
+      { id: 'nw', sx: x1, sy: y1 }, { id: 'n', sx: xm, sy: y1 }, { id: 'ne', sx: x2, sy: y1 },
+      { id: 'e',  sx: x2, sy: ym },
+      { id: 'se', sx: x2, sy: y2 }, { id: 's', sx: xm, sy: y2 }, { id: 'sw', sx: x1, sy: y2 },
+      { id: 'w',  sx: x1, sy: ym },
+    ];
+  }
+
+  function hitHandle(el, mx, my) {
+    for (const h of getHandles(el)) {
+      if (Math.hypot(mx - h.sx, my - h.sy) < HANDLE_HIT) return h.id;
+    }
+    return null;
+  }
+
+  function handleCursor(hid) {
+    return ({ nw: 'nw-resize', ne: 'ne-resize', sw: 'sw-resize', se: 'se-resize',
+              n: 'n-resize', s: 's-resize', e: 'e-resize', w: 'w-resize',
+              p1: 'crosshair', p2: 'crosshair' })[hid] || 'default';
+  }
+
+  function applyResize(el, snap, handleId, ddx, ddy) {
+    if (handleId === 'p1') { el.x  = snap.x  + ddx; el.y  = snap.y  + ddy; return; }
+    if (handleId === 'p2') { el.x2 = snap.x2 + ddx; el.y2 = snap.y2 + ddy; return; }
+
+    const b   = bounds(snap);
+    let nx1 = b.x, ny1 = b.y, nx2 = b.x + b.w, ny2 = b.y + b.h;
+
+    switch (handleId) {
+      case 'nw': nx1 += ddx; ny1 += ddy; break;
+      case 'n':               ny1 += ddy; break;
+      case 'ne': nx2 += ddx; ny1 += ddy; break;
+      case 'e':  nx2 += ddx;             break;
+      case 'se': nx2 += ddx; ny2 += ddy; break;
+      case 's':               ny2 += ddy; break;
+      case 'sw': nx1 += ddx; ny2 += ddy; break;
+      case 'w':  nx1 += ddx;             break;
+    }
+
+    const newX = Math.min(nx1, nx2), newY = Math.min(ny1, ny2);
+    const newW = Math.max(5, Math.abs(nx2 - nx1));
+    const newH = Math.max(5, Math.abs(ny2 - ny1));
+
+    switch (el.type) {
+      case 'rect': case 'ellipse': case 'image':
+        el.x = newX; el.y = newY; el.w = newW; el.h = newH; break;
+      case 'text': {
+        const sh = b.h || 1;
+        el.fontSize = Math.max(8, Math.round((snap.fontSize || 20) * newH / sh));
+        el.x = newX;
+        el.y = newY + el.fontSize;
+        break;
+      }
+      case 'pen': {
+        const sw = b.w || 1, sh = b.h || 1;
+        el.points = snap.points.map(p => ({
+          x: newX + (p.x - b.x) * newW / sw,
+          y: newY + (p.y - b.y) * newH / sh,
+        })); break;
+      }
+    }
+  }
+
   function drawSelBox(el) {
     const b   = bounds(el);
     const pad = 8 / vp.s;
-    const sx  = (b.x - pad) * vp.s + vp.x;
-    const sy  = (b.y - pad) * vp.s + vp.y;
-    const sw  = (Math.abs(b.w) + pad * 2) * vp.s;
-    const sh  = (Math.abs(b.h) + pad * 2) * vp.s;
+
     ctx.save();
     ctx.strokeStyle = '#7c3aed';
     ctx.lineWidth   = 1.5;
     ctx.setLineDash([5, 4]);
-    ctx.strokeRect(sx, sy, Math.max(sw, 20), Math.max(sh, 20));
+
+    if (el.type === 'line' || el.type === 'arrow') {
+      const p1x = el.x  * vp.s + vp.x, p1y = el.y  * vp.s + vp.y;
+      const p2x = el.x2 * vp.s + vp.x, p2y = el.y2 * vp.s + vp.y;
+      ctx.beginPath(); ctx.moveTo(p1x, p1y); ctx.lineTo(p2x, p2y); ctx.stroke();
+    } else {
+      const sx = (b.x - pad) * vp.s + vp.x;
+      const sy = (b.y - pad) * vp.s + vp.y;
+      const sw = (Math.abs(b.w) + pad * 2) * vp.s;
+      const sh = (Math.abs(b.h) + pad * 2) * vp.s;
+      ctx.strokeRect(sx, sy, Math.max(sw, 20), Math.max(sh, 20));
+    }
+
+    // Draw resize / endpoint handles
+    ctx.setLineDash([]);
+    getHandles(el).forEach(h => {
+      ctx.beginPath();
+      ctx.arc(h.sx, h.sy, HANDLE_R, 0, Math.PI * 2);
+      ctx.fillStyle   = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#7c3aed';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+    });
+
     ctx.restore();
   }
 
@@ -385,7 +488,7 @@
       render();
       return;
     }
-    if (e.key === 'Escape') { selected = null; finishText(); render(); return; }
+    if (e.key === 'Escape') { selected = null; resizeHandle = null; dragOrigin = null; finishText(); render(); return; }
     if (e.key === ' ' && !inInput) { e.preventDefault(); spaceDown = true; canvas.style.cursor = 'grab'; }
 
     // Tool shortcuts (only when not typing)
@@ -417,6 +520,21 @@
     const { x: dx, y: dy } = toDoc(mx, my);
 
     if (activeTool === 'select') {
+      resizeHandle = null;
+      dragOrigin   = null;
+
+      // Check resize/endpoint handles of currently selected element first
+      if (selected) {
+        const selEl = elements.find(el => el.id === selected);
+        if (selEl) {
+          const h = hitHandle(selEl, mx, my);
+          if (h) {
+            resizeHandle = { handleId: h, originDx: dx, originDy: dy, snap: JSON.parse(JSON.stringify(selEl)) };
+            return;
+          }
+        }
+      }
+
       const id = hitTest(dx, dy);
       selected = id;
       if (id) {
@@ -444,8 +562,18 @@
   }
 
   function onMove(e) {
-    if (!isDown) return;
     const { mx, my } = clientPos(e);
+
+    // Update cursor when hovering resize handles (not dragging, not panning)
+    if (!isDown && activeTool === 'select' && selected && !spaceDown) {
+      const el = elements.find(el => el.id === selected);
+      if (el) {
+        const h = hitHandle(el, mx, my);
+        canvas.style.cursor = h ? handleCursor(h) : 'default';
+      }
+    }
+
+    if (!isDown) return;
 
     if (panOrigin) {
       vp.x = panOrigin.vx + mx - panOrigin.mx;
@@ -455,6 +583,15 @@
     }
 
     const { x: dx, y: dy } = toDoc(mx, my);
+
+    // Resize / endpoint drag
+    if (activeTool === 'select' && resizeHandle && selected) {
+      const ddx = dx - resizeHandle.originDx, ddy = dy - resizeHandle.originDy;
+      const el  = elements.find(e => e.id === selected);
+      if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy);
+      render();
+      return;
+    }
 
     if (activeTool === 'select' && dragOrigin && selected) {
       const ddx = dx - dragOrigin.dx, ddy = dy - dragOrigin.dy;
@@ -484,7 +621,8 @@
 
     if (panOrigin) { panOrigin = null; syncCursor(); return; }
 
-    if (activeTool === 'select' && dragOrigin) { pushHistory(); dragOrigin = null; return; }
+    if (activeTool === 'select' && resizeHandle) { pushHistory(); resizeHandle = null; syncCursor(); return; }
+    if (activeTool === 'select' && dragOrigin)   { pushHistory(); dragOrigin   = null; return; }
 
     if (!drawing) return;
     const el = drawing;
