@@ -673,7 +673,8 @@
   function removeDrawingFromUI(id) {
     const idx = drawings.findIndex(d => d._id === id);
     if (idx !== -1) drawings.splice(idx, 1);
-    document.querySelector(`.drawing-card[data-id="${id}"]`)?.remove();
+    // Cards use class "clip-card clip-card--drawing" — scope to grid to be safe
+    document.querySelector(`#drawingsGrid [data-id="${id}"]`)?.remove();
     updateDrawingCount(drawings.length);
     if (drawings.length === 0) {
       const el = document.getElementById('drawingsEmpty');
