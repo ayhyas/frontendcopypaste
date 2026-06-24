@@ -1407,8 +1407,18 @@
   }
 
   function selectWorkspace(id) {
+    if (id === currentWorkspaceId) return;
+
+    // Guard: don't silently kill an active broadcast — ask first
+    if (isBroadcasting) {
+      const fromWs = workspaces.find(w => w._id === currentWorkspaceId);
+      const ok = confirm(`You are currently sharing your screen in "${fromWs?.name || 'this workspace'}".\n\nSwitching will stop your stream. Continue?`);
+      if (!ok) return;
+      stopBroadcasting(); // explicit, intentional stop
+    }
+
     // Leave previous room
-    if (currentWorkspaceId && currentWorkspaceId !== id && socket) {
+    if (currentWorkspaceId && socket) {
       socket.emit('ws:leave', { wsId: currentWorkspaceId });
     }
 
@@ -1431,8 +1441,7 @@
     const emptyText = document.getElementById('emptyStateText');
     if (emptyText) emptyText.textContent = 'No clips in this workspace yet.';
 
-    // Stop any in-progress broadcast or viewing session tied to the previous workspace
-    if (isBroadcasting) stopBroadcasting();
+    // Stop any active viewing session from the previous workspace
     if (activeBroadcasterId) { hideLiveBanner(); stopViewing(); }
     activeBroadcasterId   = null;
     activeBroadcasterName = null;
