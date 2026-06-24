@@ -20,9 +20,10 @@ const api = (() => {
 
   return {
     auth: {
-      register: (body) => request('/api/auth/register', { method: 'POST', body: JSON.stringify(body) }),
-      login:    (body) => request('/api/auth/login',    { method: 'POST', body: JSON.stringify(body) }),
-      me:       ()     => request('/api/auth/me'),
+      register:         (body) => request('/api/auth/register',     { method: 'POST',  body: JSON.stringify(body) }),
+      login:            (body) => request('/api/auth/login',         { method: 'POST',  body: JSON.stringify(body) }),
+      me:               ()     => request('/api/auth/me'),
+      updateProfilePic: (profilePic) => request('/api/auth/profile-pic', { method: 'PATCH', body: JSON.stringify({ profilePic }) }),
     },
     clips: {
       list:   (page = 1, workspaceId = null) => {

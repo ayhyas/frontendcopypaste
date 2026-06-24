@@ -117,6 +117,22 @@ button { cursor: pointer; font-family: inherit; border: none; }
 }
 
 /* ─── Avatar ───────────────────────────────────────────────────────────────── */
+.nav-avatar-wrap {
+  position: relative; cursor: pointer; flex-shrink: 0;
+  border-radius: 50%;
+}
+.avatar-camera-hint {
+  position: absolute; inset: 0;
+  border-radius: 50%;
+  background: rgba(0,0,0,.58);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0;
+  transition: opacity .15s;
+  pointer-events: none;
+  color: #fff;
+}
+.nav-avatar-wrap:hover .avatar-camera-hint { opacity: 1; }
+
 .avatar {
   width: 34px; height: 34px;
   border-radius: 50%;

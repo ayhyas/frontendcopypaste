@@ -13,6 +13,9 @@
   let workspaces         = [];
   let currentWorkspaceId = null; // null = All clips
 
+  // username → base64 profile pic; seeded with current user, updated via socket
+  const profilePicCache  = user.profilePic ? { [user.username]: user.profilePic } : {};
+
   // Screen share state
   let isBroadcasting        = false;
   let localStream           = null;
@@ -115,12 +118,64 @@
   setupScreenShare();
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
+  // ─── Avatar helpers ────────────────────────────────────────────────────────
+  function applyAvatarPic(el, username, profilePic) {
+    if (profilePic) {
+      el.textContent = '';
+      el.style.background = 'none';
+      el.style.backgroundImage = `url(${profilePic})`;
+      el.style.backgroundSize = 'cover';
+      el.style.backgroundPosition = 'center';
+    } else {
+      el.textContent = username[0].toUpperCase();
+      el.style.backgroundImage = '';
+      el.style.background = getAvatarColor(username);
+    }
+  }
+
+  function updateAllAvatarsForUser(username, profilePic) {
+    // Navbar
+    if (username === user.username) {
+      applyAvatarPic(document.getElementById('navAvatar'), username, profilePic);
+    }
+    // Clip-card author avatars
+    document.querySelectorAll('.clip-author').forEach((el) => {
+      if (el.querySelector('.author-name')?.textContent !== username) return;
+      applyAvatarPic(el.querySelector('.avatar'), username, profilePic);
+    });
+  }
+
   // ─── Navbar ────────────────────────────────────────────────────────────────
   function initNavbar() {
-    const avatar = document.getElementById('navAvatar');
-    avatar.textContent  = user.username[0].toUpperCase();
-    avatar.style.background = getAvatarColor(user.username);
+    applyAvatarPic(document.getElementById('navAvatar'), user.username, user.profilePic || null);
     document.getElementById('navUsername').textContent = user.username;
+
+    const fileInput = document.getElementById('profilePicInput');
+    document.getElementById('navAvatarWrap').addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+
+      showToast('Uploading profile picture…', 'info');
+      try {
+        const base64 = await compressProfilePic(file);
+        const { user: updated } = await api.auth.updateProfilePic(base64);
+
+        // Persist in localStorage so it survives page refresh
+        const stored = JSON.parse(localStorage.getItem('cs_user') || '{}');
+        stored.profilePic = updated.profilePic;
+        localStorage.setItem('cs_user', JSON.stringify(stored));
+        user.profilePic = updated.profilePic;
+
+        showToast('Profile picture updated!', 'success');
+        // The socket event user:profilePic will handle the visual update
+      } catch (err) {
+        if (err.status === 401) return logout();
+        showToast(err.message || 'Failed to update profile picture', 'error');
+      }
+    });
   }
 
   // ─── Socket.io ─────────────────────────────────────────────────────────────
@@ -136,6 +191,11 @@
 
     socket.on('users:count', ({ count }) => {
       document.getElementById('onlineCountNum').textContent = count;
+    });
+
+    socket.on('user:profilePic', ({ username, profilePic }) => {
+      profilePicCache[username] = profilePic;
+      updateAllAvatarsForUser(username, profilePic);
     });
 
     socket.on('clip:new', ({ data }) => {
@@ -466,7 +526,7 @@
 
       <div class="clip-card-footer">
         <div class="clip-author">
-          <div class="avatar avatar-xs" style="background:${getAvatarColor(clip.authorName)}">${clip.authorName[0].toUpperCase()}</div>
+          ${buildAuthorAvatar(clip.authorName)}
           <span class="author-name">${escapeHtml(clip.authorName)}</span>
         </div>
         <div class="clip-actions">
@@ -1539,6 +1599,36 @@
       return { colorClass: 'file-icon-zip', svg: fileSvg('<line x1="9" y1="12" x2="15" y2="12"/><line x1="9" y1="15" x2="12" y2="15"/>') };
     }
     return { colorClass: '', svg: fileSvg('') };
+  }
+
+  // ─── Profile pic helpers ───────────────────────────────────────────────────
+  function buildAuthorAvatar(username) {
+    const pic = profilePicCache[username];
+    if (pic) {
+      return `<div class="avatar avatar-xs" style="background:none;background-image:url(${pic});background-size:cover;background-position:center"></div>`;
+    }
+    return `<div class="avatar avatar-xs" style="background:${getAvatarColor(username)}">${username[0].toUpperCase()}</div>`;
+  }
+
+  function compressProfilePic(file) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        const SIZE = 256;
+        let { naturalWidth: w, naturalHeight: h } = img;
+        const ratio = Math.min(SIZE / w, SIZE / h);
+        if (ratio < 1) { w = Math.round(w * ratio); h = Math.round(h * ratio); }
+        const canvas = document.createElement('canvas');
+        canvas.width  = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = () => reject(new Error('Failed to read image'));
+      img.src = url;
+    });
   }
 
   // ─── Utils ─────────────────────────────────────────────────────────────────
