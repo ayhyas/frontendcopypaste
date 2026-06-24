@@ -232,30 +232,32 @@
         }
       };
 
+      // addTransceiver with sendEncodings bakes bitrate/scale into the SDP from the start,
+      // so getParameters().encodings is populated after negotiation and setParameters() works.
+      // addTrack() leaves encodings empty pre-negotiation, causing setParameters() to silently fail.
       localStream.getTracks().forEach((track) => {
-        const sender = pc.addTrack(track, localStream);
         if (track.kind === 'video') {
-          const params = sender.getParameters();
-          if (!params.encodings || !params.encodings.length) params.encodings = [{}];
-          params.encodings[0].maxBitrate            = QUALITY_PRESETS.high.maxBitrate;
-          params.encodings[0].scaleResolutionDownBy = QUALITY_PRESETS.high.scaleResolutionDownBy;
-          sender.setParameters(params).catch(() => {});
+          const transceiver = pc.addTransceiver(track, {
+            streams: [localStream],
+            direction: 'sendonly',
+            sendEncodings: [{
+              maxBitrate:            QUALITY_PRESETS.high.maxBitrate,
+              scaleResolutionDownBy: QUALITY_PRESETS.high.scaleResolutionDownBy,
+            }],
+          });
+          // Prefer VP9 / H.264 on this transceiver while we still have the reference
+          if (typeof RTCRtpSender !== 'undefined' && RTCRtpSender.getCapabilities) {
+            const caps = RTCRtpSender.getCapabilities('video');
+            if (caps) {
+              const preferred = caps.codecs.filter((c) => /VP9|H264/i.test(c.mimeType));
+              const rest      = caps.codecs.filter((c) => !/VP9|H264/i.test(c.mimeType));
+              try { transceiver.setCodecPreferences([...preferred, ...rest]); } catch {}
+            }
+          }
+        } else {
+          pc.addTrack(track, localStream);
         }
       });
-
-      // Prefer VP9 (better screen-content compression) then H.264 (hardware accel)
-      if (typeof RTCRtpSender !== 'undefined' && RTCRtpSender.getCapabilities) {
-        const caps = RTCRtpSender.getCapabilities('video');
-        if (caps) {
-          const preferred = caps.codecs.filter((c) => /VP9|H264/i.test(c.mimeType));
-          const rest      = caps.codecs.filter((c) => !/VP9|H264/i.test(c.mimeType));
-          pc.getTransceivers?.().forEach((t) => {
-            if (t.sender?.track?.kind === 'video') {
-              try { t.setCodecPreferences([...preferred, ...rest]); } catch {}
-            }
-          });
-        }
-      }
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -321,7 +323,7 @@
       pc.getSenders().forEach((sender) => {
         if (sender.track?.kind !== 'video') return;
         const params = sender.getParameters();
-        if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+        if (!params.encodings || !params.encodings.length) return; // negotiation not done yet
         params.encodings[0].maxBitrate            = preset.maxBitrate;
         params.encodings[0].scaleResolutionDownBy = preset.scaleResolutionDownBy;
         sender.setParameters(params).catch(() => {});
