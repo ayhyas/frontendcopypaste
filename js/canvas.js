@@ -12,6 +12,7 @@
   let histIdx     = 0;
   let activeTool  = 'pen';
   let activeStyle = { stroke: '#e2e8f0', fill: 'none', width: 2, dash: false, fontSize: 20 };
+  let bgColor     = '#0b0b16';
   let vp          = { x: 0, y: 0, s: 1 };   // viewport pan + scale
   let drawing     = null;   // element currently being drawn
   let selected    = null;   // id of selected element
@@ -40,8 +41,11 @@
     histIdx  = 0;
     selected = null;
     drawing  = null;
+    bgColor  = '#0b0b16';
     vp       = { x: 0, y: 0, s: 1 };
     document.getElementById('drawingTitle').value = '';
+    const bgInput = document.getElementById('bgColorInput');
+    if (bgInput) bgInput.value = bgColor;
     document.getElementById('canvasOverlay').classList.add('canvas-overlay--open');
     resize();
     render();
@@ -115,7 +119,8 @@
     if (!canvas || !ctx) return;
     const W = canvas.width / dpr;
     const H = canvas.height / dpr;
-    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(0, 0, W, H);
     drawGrid(W, H);
 
     ctx.save();
@@ -360,6 +365,7 @@
       if (id) {
         const el = elements.find(el => el.id === id);
         dragOrigin = { dx, dy, snap: JSON.parse(JSON.stringify(el)) };
+        syncToolbarToElement(el);
       }
       render();
       return;
@@ -486,21 +492,52 @@
   /* ─── Text tool ───────────────────────────────────────────────────────────── */
   function placeText(mx, my, dx, dy) {
     finishText();
-    const fs = activeStyle.fontSize * vp.s;
+    const fs       = activeStyle.fontSize * vp.s;
+    const lineH    = fs * 1.4;
+    // Position textarea so its text baseline aligns with the canvas draw point.
+    // Canvas draws baseline at `my`; textarea top is ~0.8 * fs above baseline.
+    const top = my - fs * 0.82;
+
     textArea.style.display    = 'block';
     textArea.style.left       = mx + 'px';
-    textArea.style.top        = (my - fs * 0.85) + 'px';
+    textArea.style.top        = top + 'px';
     textArea.style.fontSize   = fs + 'px';
+    textArea.style.lineHeight = lineH + 'px';
     textArea.style.color      = activeStyle.stroke;
-    textArea.style.minWidth   = '120px';
+    textArea.style.minWidth   = '2px';
+    textArea.style.width      = '180px';
+    textArea.style.height     = lineH + 'px';
     textArea.dataset.dx       = dx;
     textArea.dataset.dy       = dy;
     textArea.value            = '';
-    textArea.rows             = 3;
+
+    function grow() {
+      textArea.style.height = 'auto';
+      textArea.style.height = textArea.scrollHeight + 'px';
+      textArea.style.width  = Math.max(180, textArea.scrollWidth + 20) + 'px';
+    }
+
     textArea.focus();
-    textArea.oninput  = () => { drawing = mkTextPreview(dx, dy, textArea.value); render(); };
-    textArea.onblur   = () => { if (textArea.value.trim()) commitText(); else finishText(); };
-    textArea.onkeydown = e => { if (e.key === 'Escape') { finishText(); render(); } };
+    textArea.oninput = () => {
+      grow();
+      drawing = mkTextPreview(dx, dy, textArea.value);
+      render();
+    };
+    textArea.onblur = () => {
+      if (textArea.value.trim()) commitText();
+      else finishText();
+      render();
+    };
+    textArea.onkeydown = e => {
+      if (e.key === 'Escape') { e.preventDefault(); finishText(); render(); }
+      // Ctrl+Enter or Shift+Enter = commit; plain Enter = newline (default)
+      if (e.key === 'Enter' && (e.ctrlKey || e.shiftKey)) {
+        e.preventDefault();
+        if (textArea.value.trim()) commitText();
+        else finishText();
+        render();
+      }
+    };
   }
 
   function mkTextPreview(dx, dy, text) {
@@ -526,6 +563,49 @@
     textArea.onkeydown     = null;
   }
 
+  /* ─── Sync toolbar UI to selected element's properties ───────────────────── */
+  function syncToolbarToElement(el) {
+    if (!el) return;
+    // Stroke color
+    if (el.stroke) {
+      activeStyle.stroke = el.stroke;
+      document.querySelectorAll('[data-color]').forEach(s => s.classList.toggle('color-active', s.dataset.color === el.stroke));
+      const si = document.getElementById('strokeColorInput');
+      if (si) si.value = el.stroke;
+    }
+    // Fill
+    if (el.fill !== undefined) {
+      activeStyle.fill = el.fill;
+      document.querySelectorAll('[data-fill]').forEach(b => b.classList.toggle('fill-active', b.dataset.fill === el.fill));
+    }
+    // Stroke width
+    if (el.width !== undefined) {
+      activeStyle.width = el.width;
+      document.querySelectorAll('[data-sw]').forEach(b => b.classList.toggle('sw-active', +b.dataset.sw === el.width));
+    }
+    // Dash
+    if (el.dash !== undefined) {
+      activeStyle.dash = !!el.dash;
+      document.getElementById('dashToggle')?.classList.toggle('tool-active', activeStyle.dash);
+    }
+    // Font size (text only)
+    if (el.fontSize) {
+      activeStyle.fontSize = el.fontSize;
+      const fi = document.getElementById('fontSizeInput');
+      if (fi) fi.value = el.fontSize;
+    }
+  }
+
+  /* ─── Apply style to selected element ────────────────────────────────────── */
+  function applyToSelected(props) {
+    if (!selected) return;
+    const el = elements.find(e => e.id === selected);
+    if (!el) return;
+    Object.assign(el, props);
+    pushHistory();
+    render();
+  }
+
   /* ─── Toolbar ─────────────────────────────────────────────────────────────── */
   function setupToolbar() {
     document.querySelectorAll('[data-tool]').forEach(btn => {
@@ -538,6 +618,7 @@
         document.querySelectorAll('[data-color]').forEach(s => s.classList.remove('color-active'));
         sw.classList.add('color-active');
         document.getElementById('strokeColorInput').value = activeStyle.stroke;
+        applyToSelected({ stroke: activeStyle.stroke });
       });
     });
 
@@ -545,6 +626,7 @@
     strokeInput?.addEventListener('input', () => {
       activeStyle.stroke = strokeInput.value;
       document.querySelectorAll('[data-color]').forEach(s => s.classList.remove('color-active'));
+      applyToSelected({ stroke: activeStyle.stroke });
     });
 
     document.querySelectorAll('[data-fill]').forEach(btn => {
@@ -552,6 +634,7 @@
         activeStyle.fill = btn.dataset.fill;
         document.querySelectorAll('[data-fill]').forEach(b => b.classList.remove('fill-active'));
         btn.classList.add('fill-active');
+        applyToSelected({ fill: activeStyle.fill });
       });
     });
 
@@ -560,16 +643,28 @@
         activeStyle.width = +btn.dataset.sw;
         document.querySelectorAll('[data-sw]').forEach(b => b.classList.remove('sw-active'));
         btn.classList.add('sw-active');
+        applyToSelected({ width: activeStyle.width });
       });
     });
 
     document.getElementById('dashToggle')?.addEventListener('click', e => {
       activeStyle.dash = !activeStyle.dash;
       e.currentTarget.classList.toggle('tool-active', activeStyle.dash);
+      applyToSelected({ dash: activeStyle.dash });
     });
 
     const fsInput = document.getElementById('fontSizeInput');
-    fsInput?.addEventListener('change', () => { activeStyle.fontSize = +fsInput.value || 20; });
+    fsInput?.addEventListener('change', () => {
+      activeStyle.fontSize = +fsInput.value || 20;
+      applyToSelected({ fontSize: activeStyle.fontSize });
+    });
+
+    // Background color
+    const bgInput = document.getElementById('bgColorInput');
+    bgInput?.addEventListener('input', () => {
+      bgColor = bgInput.value;
+      render();
+    });
 
     document.getElementById('canvasUndo')?.addEventListener('click', undo);
     document.getElementById('canvasRedo')?.addEventListener('click', redo);
@@ -621,7 +716,7 @@
     const sh   = canvas.clientHeight;
     const rx   = w / sw, ry = h / sh;
 
-    oc.fillStyle = bgColor || '#0b0b16';
+    oc.fillStyle = bgColor;
     oc.fillRect(0, 0, w, h);
     oc.save();
     oc.translate(vp.x * rx, vp.y * ry);
