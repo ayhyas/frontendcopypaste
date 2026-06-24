@@ -12,18 +12,31 @@
   let histIdx     = 0;
   let activeTool  = 'pen';
   let activeStyle = { stroke: '#e2e8f0', fill: 'none', width: 2, dash: false, fontSize: 20 };
-  let bgColor     = '#0b0b16';
-  let vp          = { x: 0, y: 0, s: 1 };   // viewport pan + scale
-  let drawing     = null;   // element currently being drawn
-  let selected    = null;   // id of selected element
-  let dragOrigin  = null;   // { dx, dy, snapshot: clone of element at drag start }
-  let panOrigin   = null;   // { mx, my, vx, vy }
+  const BG_COLOR  = '#0b0b16';
+  let vp          = { x: 0, y: 0, s: 1 };
+  let drawing     = null;
+  let selected    = null;
+  let dragOrigin  = null;
+  let panOrigin   = null;
   let spaceDown   = false;
   let isDown      = false;
   let isOpen      = false;
+  let resources   = [];
+
+  // Cache loaded Image objects so canvas renders don't re-fetch on every frame
+  const imgCache  = new Map();
 
   /* ─── Public API ──────────────────────────────────────────────────────────── */
-  window.CanvasApp = { init, open, close: closeCanvas, onSave: null };
+  window.CanvasApp = {
+    init,
+    open: openCanvas,
+    close: closeCanvas,
+    onSave: null,
+    setResources(arr) {
+      resources = arr || [];
+      renderResPanel();
+    },
+  };
 
   function init() {
     canvas   = document.getElementById('drawingCanvas');
@@ -34,18 +47,18 @@
     setupToolbar();
   }
 
-  function open(existingElementsJson) {
+  function openCanvas(existingElementsJson) {
     isOpen   = true;
     elements = existingElementsJson ? JSON.parse(existingElementsJson) : [];
     history  = [JSON.stringify(elements)];
     histIdx  = 0;
     selected = null;
     drawing  = null;
-    bgColor  = '#0b0b16';
     vp       = { x: 0, y: 0, s: 1 };
     document.getElementById('drawingTitle').value = '';
-    const bgInput = document.getElementById('bgColorInput');
-    if (bgInput) bgInput.value = bgColor;
+    // Pre-load any image elements that were saved
+    elements.filter(el => el.type === 'image').forEach(el => loadImg(el.src));
+    hideResPanel();
     document.getElementById('canvasOverlay').classList.add('canvas-overlay--open');
     resize();
     render();
@@ -119,7 +132,7 @@
     if (!canvas || !ctx) return;
     const W = canvas.width / dpr;
     const H = canvas.height / dpr;
-    ctx.fillStyle = bgColor;
+    ctx.fillStyle = BG_COLOR;
     ctx.fillRect(0, 0, W, H);
     drawGrid(W, H);
 
@@ -163,6 +176,7 @@
       case 'line':    drawLine   (c, el); break;
       case 'arrow':   drawArrow  (c, el); break;
       case 'text':    drawText   (c, el); break;
+      case 'image':   drawImageEl(c, el); break;
     }
     c.restore();
   }
@@ -224,6 +238,40 @@
     el.text.split('\n').forEach((line, i) => c.fillText(line, el.x, el.y + i * lh));
   }
 
+  /* ─── Image helpers ───────────────────────────────────────────────────────── */
+  function loadImg(src) {
+    if (imgCache.has(src)) return imgCache.get(src);
+    const img = new Image();
+    img.onload = () => { imgCache.set(src, img); render(); };
+    img.src = src;
+    imgCache.set(src, img);
+    return img;
+  }
+
+  function drawImageEl(c, el) {
+    const img = imgCache.get(el.src);
+    if (!img || !img.complete || img.naturalWidth === 0) { loadImg(el.src); return; }
+    c.drawImage(img, el.x, el.y, el.w, el.h);
+  }
+
+  function compressImg(dataUrl, maxPx) {
+    return new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > maxPx || h > maxPx) {
+          if (w > h) { h = Math.round(h * maxPx / w); w = maxPx; }
+          else       { w = Math.round(w * maxPx / h); h = maxPx; }
+        }
+        const off = document.createElement('canvas');
+        off.width = w; off.height = h;
+        off.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve({ dataUrl: off.toDataURL('image/jpeg', 0.85), w, h });
+      };
+      img.src = dataUrl;
+    });
+  }
+
   /* ─── Bounds & hit-testing ────────────────────────────────────────────────── */
   function bounds(el) {
     switch (el.type) {
@@ -232,13 +280,12 @@
         const x  = Math.min(...xs), y = Math.min(...ys);
         return { x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y };
       }
-      case 'rect': case 'ellipse':
+      case 'rect': case 'ellipse': case 'image':
         return { x: el.x, y: el.y, w: el.w, h: el.h };
       case 'line': case 'arrow':
         return { x: Math.min(el.x, el.x2), y: Math.min(el.y, el.y2),
                  w: Math.abs(el.x2 - el.x), h: Math.abs(el.y2 - el.y) };
       case 'text': {
-        // measure approximate bounds
         const lines = (el.text || ' ').split('\n');
         const fs    = el.fontSize || 20;
         const lh    = fs * 1.4;
@@ -265,7 +312,7 @@
           if (i === 0) return false;
           return segDist(dx, dy, el.points[i - 1].x, el.points[i - 1].y, p.x, p.y) < T;
         });
-      case 'rect': case 'ellipse': {
+      case 'rect': case 'ellipse': case 'image': {
         const b = bounds(el);
         const x1 = Math.min(b.x, b.x + b.w), x2 = Math.max(b.x, b.x + b.w);
         const y1 = Math.min(b.y, b.y + b.h), y2 = Math.max(b.y, b.y + b.h);
@@ -320,6 +367,7 @@
     document.addEventListener('keyup',     e => {
       if (e.key === ' ') { spaceDown = false; syncCursor(); }
     });
+    document.addEventListener('paste', onPaste);
   }
 
   function onKey(e) {
@@ -483,7 +531,7 @@
       case 'pen':
         el.points = snap.points.map(p => ({ x: p.x + ddx, y: p.y + ddy }));
         break;
-      case 'rect': case 'ellipse': case 'text':
+      case 'rect': case 'ellipse': case 'text': case 'image':
         el.x = snap.x + ddx; el.y = snap.y + ddy;
         break;
       case 'line': case 'arrow':
@@ -629,6 +677,85 @@
     render();
   }
 
+  /* ─── Paste from clipboard ────────────────────────────────────────────────── */
+  async function onPaste(e) {
+    if (!isOpen) return;
+    const focused = document.activeElement;
+    if (focused && focused !== canvas && focused !== document.body) return;
+    const items = e.clipboardData?.items;
+    if (!items) return;
+    for (const item of Array.from(items)) {
+      if (!item.type.startsWith('image/')) continue;
+      e.preventDefault();
+      const blob = item.getAsFile();
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        const { dataUrl, w, h } = await compressImg(ev.target.result, 1000);
+        const { x: cx, y: cy } = toDoc(canvas.clientWidth / 2, canvas.clientHeight / 2);
+        const img = new Image();
+        img.onload = () => {
+          imgCache.set(dataUrl, img);
+          elements.push({ id: genId(), type: 'image', x: cx - w/2, y: cy - h/2, w, h, src: dataUrl, opacity: 1 });
+          pushHistory();
+          render();
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(blob);
+      break;
+    }
+  }
+
+  /* ─── Resources panel (inside canvas overlay) ─────────────────────────────── */
+  function hideResPanel() {
+    const panel = document.getElementById('canvasResPanel');
+    if (panel) panel.classList.remove('canvas-res-panel--open');
+  }
+
+  function renderResPanel() {
+    const body = document.getElementById('canvasResPanelBody');
+    if (!body) return;
+    body.innerHTML = '';
+    if (!resources.length) {
+      body.innerHTML = '<p class="canvas-res-empty">No resources yet.<br>Add images or text in the Resources tab.</p>';
+      return;
+    }
+    resources.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'canvas-res-item canvas-res-item--' + r.type;
+      item.title     = r.name || (r.type === 'image' ? 'Image' : r.content.slice(0, 40));
+      if (r.type === 'image') {
+        const img = document.createElement('img');
+        img.src = r.content;
+        img.alt = r.name || 'Resource';
+        item.appendChild(img);
+      } else {
+        item.textContent = r.content.length > 80 ? r.content.slice(0, 80) + '…' : r.content;
+      }
+      item.addEventListener('click', () => addResourceToCanvas(r));
+      body.appendChild(item);
+    });
+  }
+
+  function addResourceToCanvas(r) {
+    const cx = canvas.clientWidth  / 2;
+    const cy = canvas.clientHeight / 2;
+    const { x: dx, y: dy } = toDoc(cx, cy);
+    if (r.type === 'image') {
+      const cached = imgCache.get(r.content);
+      const w = cached ? Math.min(cached.naturalWidth,  400) : 300;
+      const h = cached ? Math.min(cached.naturalHeight, 400 * (cached.naturalHeight / (cached.naturalWidth || 1))) : 200;
+      loadImg(r.content);
+      elements.push({ id: genId(), type: 'image', x: dx - w/2, y: dy - h/2, w, h, src: r.content, opacity: 1 });
+    } else {
+      elements.push({ id: genId(), type: 'text', x: dx, y: dy,
+                      text: r.content, stroke: activeStyle.stroke,
+                      fontSize: activeStyle.fontSize, fill: 'none', width: 1, dash: false, opacity: 1 });
+    }
+    pushHistory();
+    render();
+  }
+
   /* ─── Toolbar ─────────────────────────────────────────────────────────────── */
   function setupToolbar() {
     document.querySelectorAll('[data-tool]').forEach(btn => {
@@ -693,12 +820,13 @@
       applyToSelected({ fontSize: activeStyle.fontSize });
     });
 
-    // Background color
-    const bgInput = document.getElementById('bgColorInput');
-    bgInput?.addEventListener('input', () => {
-      bgColor = bgInput.value;
-      render();
+    document.getElementById('canvasResBtn')?.addEventListener('click', () => {
+      const panel = document.getElementById('canvasResPanel');
+      if (!panel) return;
+      panel.classList.toggle('canvas-res-panel--open');
+      if (panel.classList.contains('canvas-res-panel--open')) renderResPanel();
     });
+    document.getElementById('canvasResClose')?.addEventListener('click', hideResPanel);
 
     document.getElementById('canvasUndo')?.addEventListener('click', undo);
     document.getElementById('canvasRedo')?.addEventListener('click', redo);
@@ -742,7 +870,7 @@
   }
 
   /* ─── Export ──────────────────────────────────────────────────────────────── */
-  function snapshot(w, h, bgColor) {
+  function snapshot(w, h) {
     const off = document.createElement('canvas');
     off.width  = w; off.height = h;
     const oc   = off.getContext('2d');
@@ -750,7 +878,7 @@
     const sh   = canvas.clientHeight;
     const rx   = w / sw, ry = h / sh;
 
-    oc.fillStyle = bgColor;
+    oc.fillStyle = BG_COLOR;
     oc.fillRect(0, 0, w, h);
     oc.save();
     oc.translate(vp.x * rx, vp.y * ry);

@@ -114,6 +114,7 @@
   loadWorkspaces();
   loadClips();
   loadDrawings();
+  loadResources();
   setupPaste();
   setupDragDrop();
   setupFileUpload();
@@ -124,6 +125,7 @@
   setupScreenShare();
   setupOnlineUsersPanel();
   setupDrawings();
+  setupResources();
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
   // ─── Avatar helpers ────────────────────────────────────────────────────────
@@ -338,10 +340,26 @@
       drawings = drawings.filter(d => d._id !== id);
       document.querySelector(`.drawing-card[data-id="${id}"]`)?.remove();
       updateDrawingCount(drawings.length);
-      if (drawings.length === 0) {
-        const drawingsEmpty = document.getElementById('drawingsEmpty');
-        if (drawingsEmpty) drawingsEmpty.style.display = 'flex';
+    });
+
+    socket.on('resource:new', ({ resource }) => {
+      if (resources.find(r => r._id === resource._id)) return;
+      resources.unshift(resource);
+      const grid    = document.getElementById('resourcesGrid');
+      const emptyEl = document.getElementById('resourcesEmpty');
+      grid?.prepend(buildResourceCard(resource));
+      if (emptyEl) emptyEl.style.display = 'none';
+      if (window.CanvasApp) CanvasApp.setResources(resources);
+    });
+
+    socket.on('resource:deleted', ({ id }) => {
+      resources = resources.filter(r => r._id !== id);
+      document.querySelector(`.resource-card[data-id="${id}"]`)?.remove();
+      if (resources.length === 0) {
+        const emptyEl = document.getElementById('resourcesEmpty');
+        if (emptyEl) emptyEl.style.display = 'flex';
       }
+      if (window.CanvasApp) CanvasApp.setResources(resources);
     });
 
     // ─── Screen share signaling ─────────────────────────────────────────────
@@ -2023,28 +2041,29 @@
 
   // ─── Drawings ──────────────────────────────────────────────────────────────
   function setupDrawings() {
-    // Tab switching
-    const tabClips    = document.getElementById('tabClips');
-    const tabDrawings = document.getElementById('tabDrawings');
+    // Tab switching (3 tabs: Clips / Drawings / Resources)
+    const tabClips        = document.getElementById('tabClips');
+    const tabDrawings     = document.getElementById('tabDrawings');
+    const tabResources    = document.getElementById('tabResources');
     const clipsSection    = document.getElementById('clipsSection');
     const drawingsSection = document.getElementById('drawingsSection');
+    const resourcesSection = document.getElementById('resourcesSection');
 
-    tabClips.addEventListener('click', () => {
-      tabClips.classList.add('section-tab--active');
-      tabDrawings.classList.remove('section-tab--active');
-      clipsSection.style.display    = '';
-      drawingsSection.style.display = 'none';
-    });
-    tabDrawings.addEventListener('click', () => {
-      tabDrawings.classList.add('section-tab--active');
-      tabClips.classList.remove('section-tab--active');
-      drawingsSection.style.display = '';
-      clipsSection.style.display    = 'none';
-    });
+    function switchTab(active) {
+      [tabClips, tabDrawings, tabResources].forEach(t => t?.classList.remove('section-tab--active'));
+      active.classList.add('section-tab--active');
+      clipsSection.style.display     = active === tabClips     ? '' : 'none';
+      drawingsSection.style.display  = active === tabDrawings  ? '' : 'none';
+      resourcesSection.style.display = active === tabResources ? '' : 'none';
+    }
+    tabClips.addEventListener('click',     () => switchTab(tabClips));
+    tabDrawings.addEventListener('click',  () => switchTab(tabDrawings));
+    tabResources?.addEventListener('click', () => switchTab(tabResources));
 
     // New drawing button
     document.getElementById('newDrawingBtn').addEventListener('click', () => {
       CanvasApp.open();
+      CanvasApp.setResources(resources);
     });
 
     // Canvas save callback
@@ -2149,12 +2168,14 @@
     // Preview click → open in canvas
     card.querySelector('.clip-card-preview').addEventListener('click', () => {
       CanvasApp.open(drawing.elements);
+      CanvasApp.setResources(resources);
       document.getElementById('drawingTitle').value = drawing.title || '';
     });
 
     // Open button → same
     card.querySelector('.btn-open-drawing').addEventListener('click', () => {
       CanvasApp.open(drawing.elements);
+      CanvasApp.setResources(resources);
       document.getElementById('drawingTitle').value = drawing.title || '';
     });
 
@@ -2182,6 +2203,181 @@
   function updateDrawingCount(n) {
     const el = document.getElementById('drawingCount');
     if (el) el.textContent = n > 0 ? n : '';
+  }
+
+  // ─── Resources ─────────────────────────────────────────────────────────────
+  let resources = [];
+
+  async function loadResources() {
+    const loadingEl = document.getElementById('resourcesLoading');
+    const emptyEl   = document.getElementById('resourcesEmpty');
+    const grid      = document.getElementById('resourcesGrid');
+    if (loadingEl) loadingEl.style.display = 'flex';
+    try {
+      const res = await api.resources.list();
+      resources = res.data || [];
+      renderResourcesGrid();
+    } catch {
+      showToast('Could not load resources', 'error');
+    } finally {
+      if (loadingEl) loadingEl.style.display = 'none';
+    }
+    // Pass resources to canvas panel
+    if (window.CanvasApp) CanvasApp.setResources(resources);
+  }
+
+  function renderResourcesGrid() {
+    const emptyEl = document.getElementById('resourcesEmpty');
+    const grid    = document.getElementById('resourcesGrid');
+    if (!grid) return;
+    grid.innerHTML = '';
+    if (resources.length === 0) {
+      if (emptyEl) emptyEl.style.display = 'flex';
+    } else {
+      if (emptyEl) emptyEl.style.display = 'none';
+      resources.forEach(r => grid.appendChild(buildResourceCard(r)));
+    }
+  }
+
+  function setupResources() {
+    // Show add-area only for admin
+    const addArea = document.getElementById('resourceAddArea');
+    if (addArea && isAdmin) addArea.style.display = 'flex';
+
+    // Paste zone: click → file picker
+    const pasteZone  = document.getElementById('resourcePasteZone');
+    const fileInput  = document.getElementById('resourceFileInput');
+    pasteZone?.addEventListener('click', () => fileInput?.click());
+    pasteZone?.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput?.click(); });
+
+    fileInput?.addEventListener('change', async () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      fileInput.value = '';
+      await saveImageResource(file);
+    });
+
+    // Drag-and-drop onto paste zone
+    pasteZone?.addEventListener('dragover',  e => { e.preventDefault(); pasteZone.classList.add('resource-paste-zone--drag'); });
+    pasteZone?.addEventListener('dragleave', () => pasteZone.classList.remove('resource-paste-zone--drag'));
+    pasteZone?.addEventListener('drop', async e => {
+      e.preventDefault();
+      pasteZone.classList.remove('resource-paste-zone--drag');
+      const file = e.dataTransfer.files[0];
+      if (file?.type.startsWith('image/')) await saveImageResource(file);
+    });
+
+    // Paste image anywhere on the resources tab
+    document.addEventListener('paste', async e => {
+      if (document.getElementById('resourcesSection')?.style.display === 'none') return;
+      if (!isAdmin) return;
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      for (const item of Array.from(items)) {
+        if (item.type.startsWith('image/')) {
+          e.preventDefault();
+          await saveImageResource(item.getAsFile());
+          break;
+        }
+      }
+    });
+
+    // Add text resource
+    const textInput = document.getElementById('resourceTextInput');
+    const addBtn    = document.getElementById('addTextResourceBtn');
+    async function submitText() {
+      const val = textInput?.value.trim();
+      if (!val) return;
+      try {
+        await api.resources.create('text', val.slice(0, 50), val);
+        textInput.value = '';
+      } catch (err) {
+        showToast(err.message || 'Failed to add resource', 'error');
+      }
+    }
+    addBtn?.addEventListener('click', submitText);
+    textInput?.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitText(); } });
+  }
+
+  async function saveImageResource(file) {
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      const compressed = await compressResourceImage(dataUrl, 1200);
+      await api.resources.create('image', file.name.replace(/\.[^.]+$/, '') || 'Image', compressed);
+    } catch (err) {
+      showToast(err.message || 'Failed to save image', 'error');
+    }
+  }
+
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = e => resolve(e.target.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function compressResourceImage(dataUrl, maxPx) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        let w = img.width, h = img.height;
+        if (w > maxPx || h > maxPx) {
+          if (w > h) { h = Math.round(h * maxPx / w); w = maxPx; }
+          else       { w = Math.round(w * maxPx / h); h = maxPx; }
+        }
+        const off = document.createElement('canvas');
+        off.width = w; off.height = h;
+        off.getContext('2d').drawImage(img, 0, 0, w, h);
+        resolve(off.toDataURL('image/jpeg', 0.85));
+      };
+      img.onerror = reject;
+      img.src = dataUrl;
+    });
+  }
+
+  function buildResourceCard(r) {
+    const isOwn  = r.authorName === user.username;
+    const canDel = isOwn || isAdmin;
+
+    const card = document.createElement('div');
+    card.className  = 'resource-card resource-card--' + r.type;
+    card.dataset.id = r._id;
+
+    if (r.type === 'image') {
+      card.innerHTML = `
+        <div class="resource-card-thumb">
+          <img src="${r.content}" alt="${escapeHtml(r.name || 'Image')}" loading="lazy" />
+        </div>
+        <div class="resource-card-footer">
+          <span class="resource-card-name">${escapeHtml(r.name || 'Image')}</span>
+          ${canDel ? `<button class="resource-delete-btn" title="Delete">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+            </svg>
+          </button>` : ''}
+        </div>`;
+    } else {
+      card.innerHTML = `
+        <div class="resource-card-text">${escapeHtml(r.content)}</div>
+        <div class="resource-card-footer">
+          <span class="resource-card-name">${escapeHtml(r.name || r.content.slice(0, 20))}</span>
+          ${canDel ? `<button class="resource-delete-btn" title="Delete">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+            </svg>
+          </button>` : ''}
+        </div>`;
+    }
+
+    card.querySelector('.resource-delete-btn')?.addEventListener('click', async () => {
+      if (!confirm('Delete this resource?')) return;
+      try { await api.resources.remove(r._id); }
+      catch (err) { showToast(err.message || 'Failed to delete', 'error'); }
+    });
+
+    return card;
   }
 
   // ─── Utils ─────────────────────────────────────────────────────────────────

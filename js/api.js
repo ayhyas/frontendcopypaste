@@ -46,5 +46,10 @@ const api = (() => {
       create: (title, elements, preview)   => request('/api/drawings', { method: 'POST', body: JSON.stringify({ title, elements, preview }) }),
       remove: (id)                         => request(`/api/drawings/${id}`, { method: 'DELETE' }),
     },
+    resources: {
+      list:   ()                             => request('/api/resources'),
+      create: (type, name, content)         => request('/api/resources', { method: 'POST', body: JSON.stringify({ type, name, content }) }),
+      remove: (id)                           => request(`/api/resources/${id}`, { method: 'DELETE' }),
+    },
   };
 })();
