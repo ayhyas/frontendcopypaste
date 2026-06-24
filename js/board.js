@@ -134,6 +134,10 @@
     socket.on('disconnect', () => setConnectionStatus(false));
     socket.on('connect_error', () => setConnectionStatus(false));
 
+    socket.on('users:count', ({ count }) => {
+      document.getElementById('onlineCountNum').textContent = count;
+    });
+
     socket.on('clip:new', ({ data }) => {
       if (clips.some((c) => c._id === data._id)) return;
 
