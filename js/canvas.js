@@ -17,17 +17,18 @@
   let drawing      = null;
   let selected     = null;
   let dragOrigin   = null;
-  let resizeHandle = null; // { handleId, originDx, originDy, snap }
+  let resizeHandle = null;
   let panOrigin    = null;
   let spaceDown    = false;
   let isDown       = false;
   let isOpen       = false;
   let resources    = [];
 
-  // RAF batching — collapses rapid render() calls into one frame
-  let rafId        = null;
+  // Only image-load callbacks use RAF (can fire many times while other frames are already pending)
+  let imgRafId     = null;
+  // Tracks the pending focus RAF so finishText() can cancel it before it fires
+  let textFocusRaf = null;
 
-  // Cache loaded Image objects so canvas renders don't re-fetch on every frame
   const imgCache   = new Map();
 
   /* ─── Public API ──────────────────────────────────────────────────────────── */
@@ -50,6 +51,7 @@
     setupEvents();
     setupToolbar();
     setupCtxMenu();
+    setupFullscreen();
   }
 
   function openCanvas(existingElementsJson) {
@@ -75,14 +77,10 @@
     selected = null;
     drawing  = null;
     elements = [];
+    // Exit fullscreen if active
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     document.getElementById('canvasOverlay').classList.remove('canvas-overlay--open');
     document.getElementById('drawingTitle').value = '';
-  }
-
-  /* ─── RAF render scheduling ───────────────────────────────────────────────── */
-  function scheduleRender() {
-    if (rafId) return;
-    rafId = requestAnimationFrame(() => { rafId = null; render(); });
   }
 
   /* ─── Resize ──────────────────────────────────────────────────────────────── */
@@ -101,7 +99,7 @@
     canvas.style.width  = W + 'px';
     canvas.style.height = H + 'px';
     ctx.scale(dpr, dpr);
-    render(); // immediate — canvas dimensions just changed
+    render();
   }
 
   /* ─── Viewport ────────────────────────────────────────────────────────────── */
@@ -113,11 +111,6 @@
 
   function toDoc(mx, my) {
     return { x: (mx - vp.x) / vp.s, y: (my - vp.y) / vp.s };
-  }
-
-  function docPos(e) {
-    const { mx, my } = clientPos(e);
-    return toDoc(mx, my);
   }
 
   /* ─── History ─────────────────────────────────────────────────────────────── */
@@ -132,7 +125,7 @@
       histIdx--;
       elements = JSON.parse(history[histIdx]);
       selected = null; resizeHandle = null; dragOrigin = null;
-      scheduleRender();
+      render();
     }
   }
 
@@ -141,7 +134,7 @@
       histIdx++;
       elements = JSON.parse(history[histIdx]);
       selected = null; resizeHandle = null; dragOrigin = null;
-      scheduleRender();
+      render();
     }
   }
 
@@ -169,6 +162,12 @@
       if (el) drawSelBox(el);
     }
     updateZoomLabel();
+  }
+
+  // Only used for image-load callbacks that can fire in bursts
+  function scheduleRender() {
+    if (imgRafId) return;
+    imgRafId = requestAnimationFrame(() => { imgRafId = null; render(); });
   }
 
   function drawGrid(W, H) {
@@ -263,6 +262,7 @@
   function loadImg(src) {
     if (imgCache.has(src)) return imgCache.get(src);
     const img = new Image();
+    // RAF-batch image loads — many images can load in the same burst
     img.onload = () => { imgCache.set(src, img); scheduleRender(); };
     img.src = src;
     imgCache.set(src, img);
@@ -358,8 +358,8 @@
   }
 
   /* ─── Selection box & resize handles ─────────────────────────────────────── */
-  const HANDLE_R   = 5;  // draw radius (screen px)
-  const HANDLE_HIT = 9;  // hit tolerance (screen px)
+  const HANDLE_R   = 5;
+  const HANDLE_HIT = 9;
 
   function getHandles(el) {
     if (el.type === 'line' || el.type === 'arrow') {
@@ -460,7 +460,6 @@
       ctx.strokeRect(sx, sy, Math.max(sw, 20), Math.max(sh, 20));
     }
 
-    // Draw resize / endpoint handles
     ctx.setLineDash([]);
     getHandles(el).forEach(h => {
       ctx.beginPath();
@@ -475,7 +474,7 @@
     ctx.restore();
   }
 
-  /* ─── Mouse / touch events ────────────────────────────────────────────────── */
+  /* ─── Events ──────────────────────────────────────────────────────────────── */
   function setupEvents() {
     canvas.addEventListener('mousedown',   onDown);
     canvas.addEventListener('mousemove',   onMove);
@@ -508,26 +507,23 @@
     }
     if ((e.key === 'Delete' || e.key === 'Backspace') && selected && !inInput) {
       elements = elements.filter(el => el.id !== selected);
-      selected = null;
-      pushHistory();
-      scheduleRender();
-      return;
+      selected = null; pushHistory(); render(); return;
     }
     if (e.key === 'Escape') {
       hideCtxMenu();
       selected = null; resizeHandle = null; dragOrigin = null;
-      finishText(); scheduleRender(); return;
+      finishText(); render(); return;
     }
+    if (e.key === 'f' && !inInput && !mod) { toggleFullscreen(); return; }
     if (e.key === ' ' && !inInput) { e.preventDefault(); spaceDown = true; canvas.style.cursor = 'grab'; }
 
-    // Tool shortcuts (only when not typing)
     if (!inInput && !mod) {
       const shortcuts = { v: 'select', p: 'pen', r: 'rect', e: 'ellipse', l: 'line', a: 'arrow', t: 'text', x: 'eraser' };
       if (shortcuts[e.key]) selectTool(shortcuts[e.key]);
     }
   }
 
-  /* ─── Double-click: select element or re-edit text ───────────────────────── */
+  /* ─── Double-click: select or re-edit text ────────────────────────────────── */
   function onDblClick(e) {
     if (e.button !== 0 || spaceDown) return;
     const { mx, my } = clientPos(e);
@@ -539,26 +535,25 @@
     if (!el) return;
 
     if (el.type === 'text') {
-      // Re-enter edit mode: remove element, re-open textarea with its content
+      // Remove the element and open its content for editing
       finishText();
       elements = elements.filter(e => e.id !== id);
       selected = null;
       activeStyle.fontSize = el.fontSize || 20;
       activeStyle.stroke   = el.stroke   || activeStyle.stroke;
       selectTool('text');
-
       const sx = el.x * vp.s + vp.x;
       const sy = el.y * vp.s + vp.y;
       placeText(sx, sy, el.x, el.y);
+      // Pre-fill after placeText resets value
       textArea.value = el.text || '';
-      textArea.dispatchEvent(new Event('input')); // trigger grow + preview
+      textArea.dispatchEvent(new Event('input'));
     } else {
-      // Select the element and switch to select tool
       finishText();
       selected = id;
       selectTool('select');
       syncToolbarToElement(el);
-      scheduleRender();
+      render();
     }
   }
 
@@ -572,18 +567,16 @@
 
     if (!id) { hideCtxMenu(); return; }
 
-    // Select the right-clicked element
     if (selected !== id) {
       selected = id;
       const el = elements.find(el => el.id === id);
       if (el) syncToolbarToElement(el);
-      scheduleRender();
+      render();
     }
 
     const menu = document.getElementById('canvasCtxMenu');
     if (!menu) return;
 
-    // Position (keep inside viewport)
     const vw = window.innerWidth, vh = window.innerHeight;
     let left = e.clientX + 4, top = e.clientY + 4;
     menu.style.display = 'block';
@@ -609,32 +602,27 @@
       case 'delete':
         elements.splice(idx, 1);
         selected = null;
-        pushHistory();
-        scheduleRender();
+        pushHistory(); render();
         break;
       case 'duplicate': {
         const clone = JSON.parse(JSON.stringify(elements[idx]));
         clone.id = genId();
-        // Offset clone so it's visually distinct
         const off = 20 / vp.s;
         if (clone.points) clone.points = clone.points.map(p => ({ x: p.x + off, y: p.y + off }));
         else { clone.x = (clone.x || 0) + off; clone.y = (clone.y || 0) + off; }
         if (clone.x2 !== undefined) { clone.x2 += off; clone.y2 += off; }
         elements.push(clone);
         selected = clone.id;
-        pushHistory();
-        scheduleRender();
+        pushHistory(); render();
         break;
       }
       case 'front':
         elements.push(elements.splice(idx, 1)[0]);
-        pushHistory();
-        scheduleRender();
+        pushHistory(); render();
         break;
       case 'back':
         elements.unshift(elements.splice(idx, 1)[0]);
-        pushHistory();
-        scheduleRender();
+        pushHistory(); render();
         break;
     }
   }
@@ -646,13 +634,47 @@
       const btn = e.target.closest('[data-cmd]');
       if (btn) execCtxCmd(btn.dataset.cmd);
     });
-    // Dismiss on click outside the menu
     document.addEventListener('mousedown', e => {
       if (menu.style.display !== 'none' && !menu.contains(e.target)) hideCtxMenu();
     }, true);
   }
 
-  /* ─── Canvas click (text placement) ──────────────────────────────────────── */
+  /* ─── Fullscreen ──────────────────────────────────────────────────────────── */
+  function setupFullscreen() {
+    document.getElementById('canvasFullscreenBtn')
+      ?.addEventListener('click', toggleFullscreen);
+
+    document.addEventListener('fullscreenchange', () => {
+      updateFullscreenBtn();
+      // Let the browser finish applying fullscreen layout before measuring
+      requestAnimationFrame(() => { resize(); render(); });
+    });
+  }
+
+  function toggleFullscreen() {
+    const overlay = document.getElementById('canvasOverlay');
+    if (!document.fullscreenElement) {
+      overlay.requestFullscreen({ navigationUI: 'hide' }).catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  }
+
+  function updateFullscreenBtn() {
+    const btn = document.getElementById('canvasFullscreenBtn');
+    if (!btn) return;
+    const isFs = !!document.fullscreenElement;
+    btn.title = isFs ? 'Exit fullscreen (F)' : 'Fullscreen (F)';
+    const svg = btn.querySelector('svg');
+    if (!svg) return;
+    svg.innerHTML = isFs
+      // compress icon (exit fullscreen)
+      ? `<polyline points="8 3 3 3 3 8"/><polyline points="21 3 16 3 16 8"/><polyline points="3 16 3 21 8 21"/><polyline points="16 21 21 21 21 16"/>`
+      // expand icon
+      : `<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>`;
+  }
+
+  /* ─── Text tool click ─────────────────────────────────────────────────────── */
   function onCanvasClick(e) {
     if (activeTool !== 'text' || spaceDown || e.button === 2) return;
     const { mx, my } = clientPos(e);
@@ -677,10 +699,8 @@
     const { x: dx, y: dy } = toDoc(mx, my);
 
     if (activeTool === 'select') {
-      resizeHandle = null;
-      dragOrigin   = null;
+      resizeHandle = null; dragOrigin = null;
 
-      // Check resize/endpoint handles of currently selected element first
       if (selected) {
         const selEl = elements.find(el => el.id === selected);
         if (selEl) {
@@ -699,16 +719,12 @@
         dragOrigin = { dx, dy, snap: JSON.parse(JSON.stringify(el)) };
         syncToolbarToElement(el);
       }
-      scheduleRender();
+      render();
       return;
     }
 
-    if (activeTool === 'eraser') {
-      eraseAt(dx, dy);
-      return;
-    }
+    if (activeTool === 'eraser') { eraseAt(dx, dy); return; }
 
-    // Start drawing shape
     const base = { id: genId(), stroke: activeStyle.stroke, fill: activeStyle.fill, width: activeStyle.width, dash: activeStyle.dash, opacity: 1 };
     if (activeTool === 'pen')
       drawing = { ...base, type: 'pen', points: [{ x: dx, y: dy }] };
@@ -722,7 +738,7 @@
   function onMove(e) {
     const { mx, my } = clientPos(e);
 
-    // Update cursor when hovering resize handles (idle, not panning)
+    // Hover cursor for resize handles
     if (!isDown && activeTool === 'select' && selected && !spaceDown) {
       const el = elements.find(el => el.id === selected);
       if (el) {
@@ -736,18 +752,17 @@
     if (panOrigin) {
       vp.x = panOrigin.vx + mx - panOrigin.mx;
       vp.y = panOrigin.vy + my - panOrigin.my;
-      scheduleRender();
+      render(); // immediate — pan must feel instant
       return;
     }
 
     const { x: dx, y: dy } = toDoc(mx, my);
 
-    // Resize / endpoint drag
     if (activeTool === 'select' && resizeHandle && selected) {
       const ddx = dx - resizeHandle.originDx, ddy = dy - resizeHandle.originDy;
       const el  = elements.find(e => e.id === selected);
       if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy);
-      scheduleRender();
+      render();
       return;
     }
 
@@ -755,7 +770,7 @@
       const ddx = dx - dragOrigin.dx, ddy = dy - dragOrigin.dy;
       const el  = elements.find(e => e.id === selected);
       if (el) moveEl(el, dragOrigin.snap, ddx, ddy);
-      scheduleRender();
+      render();
       return;
     }
 
@@ -770,7 +785,7 @@
     } else if (drawing.type === 'line' || drawing.type === 'arrow') {
       drawing.x2 = dx; drawing.y2 = dy;
     }
-    scheduleRender();
+    render();
   }
 
   /* ─── Mouse up ────────────────────────────────────────────────────────────── */
@@ -779,7 +794,6 @@
     isDown = false;
 
     if (panOrigin) { panOrigin = null; syncCursor(); return; }
-
     if (activeTool === 'select' && resizeHandle) { pushHistory(); resizeHandle = null; syncCursor(); return; }
     if (activeTool === 'select' && dragOrigin)   { pushHistory(); dragOrigin   = null; return; }
 
@@ -787,19 +801,18 @@
     const el = drawing;
     drawing  = null;
 
-    // Discard noise
-    if (el.type === 'pen' && el.points.length < 3) { scheduleRender(); return; }
-    if ((el.type === 'rect' || el.type === 'ellipse') && Math.abs(el.w) < 3 && Math.abs(el.h) < 3) { scheduleRender(); return; }
-    if ((el.type === 'line' || el.type === 'arrow') && Math.abs(el.x2 - el.x) < 3 && Math.abs(el.y2 - el.y) < 3) { scheduleRender(); return; }
+    if (el.type === 'pen' && el.points.length < 3) { render(); return; }
+    if ((el.type === 'rect' || el.type === 'ellipse') && Math.abs(el.w) < 3 && Math.abs(el.h) < 3) { render(); return; }
+    if ((el.type === 'line' || el.type === 'arrow') && Math.abs(el.x2 - el.x) < 3 && Math.abs(el.y2 - el.y) < 3) { render(); return; }
 
     elements.push(el);
-    // Auto-select the just-drawn element and switch to select tool
-    selected = el.id;
-    selectTool('select');
+    selected = el.id;      // auto-select the just-drawn element
+    selectTool('select');  // switch back to select tool
     pushHistory();
-    scheduleRender();
+    render();
   }
 
+  /* ─── Wheel: zoom & pan ───────────────────────────────────────────────────── */
   function onWheel(e) {
     e.preventDefault();
     const { mx, my } = clientPos(e);
@@ -813,7 +826,7 @@
       vp.x -= e.deltaX;
       vp.y -= e.deltaY;
     }
-    scheduleRender();
+    render(); // immediate — zoom must feel instant, no RAF delay
   }
 
   function eraseAt(dx, dy) {
@@ -822,7 +835,7 @@
       elements = elements.filter(e => e.id !== id);
       if (selected === id) selected = null;
       pushHistory();
-      scheduleRender();
+      render();
     }
   }
 
@@ -843,7 +856,6 @@
 
   /* ─── Text tool ───────────────────────────────────────────────────────────── */
   function placeText(mx, my, dx, dy) {
-    // Commit any in-progress text before starting a new one
     if (textArea.style.display === 'block') {
       if (textArea.value.trim()) commitText();
       else finishText();
@@ -858,7 +870,7 @@
     textArea.style.fontSize   = fs + 'px';
     textArea.style.lineHeight = lineH + 'px';
     textArea.style.color      = activeStyle.stroke;
-    textArea.style.width      = '180px';
+    textArea.style.width      = '4px';       // start minimal, grow() expands it
     textArea.style.height     = lineH + 'px';
     textArea.dataset.dx       = dx;
     textArea.dataset.dy       = dy;
@@ -868,31 +880,33 @@
 
     function grow() {
       textArea.style.height = 'auto';
-      textArea.style.height = textArea.scrollHeight + 'px';
-      textArea.style.width  = Math.max(180, textArea.scrollWidth + 20) + 'px';
+      textArea.style.height = Math.max(lineH, textArea.scrollHeight) + 'px';
+      textArea.style.width  = Math.max(2, textArea.scrollWidth + 4) + 'px';
     }
 
     textArea.oninput = () => {
       grow();
       drawing = mkTextPreview(dx, dy);
-      scheduleRender();
+      render(); // immediate — typing must update canvas preview instantly
     };
     textArea.onblur = () => {
       if (textArea.value.trim()) commitText();
       else finishText();
-      scheduleRender();
+      render();
     };
     textArea.onkeydown = e => {
-      if (e.key === 'Escape') { e.preventDefault(); finishText(); scheduleRender(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); finishText(); render(); return; }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         if (textArea.value.trim()) commitText();
         else finishText();
-        scheduleRender();
+        render();
       }
     };
 
-    requestAnimationFrame(() => textArea.focus());
+    // Cancel any previous pending focus RAF before scheduling a new one
+    if (textFocusRaf) { cancelAnimationFrame(textFocusRaf); textFocusRaf = null; }
+    textFocusRaf = requestAnimationFrame(() => { textFocusRaf = null; textArea.focus(); });
   }
 
   function mkTextPreview(dx, dy) {
@@ -913,10 +927,12 @@
                     fontSize: fs, fill: 'none', width: 1, dash: false, opacity: 1 });
     pushHistory();
     finishText();
-    scheduleRender();
+    render();
   }
 
   function finishText() {
+    // Cancel pending focus RAF — avoids focusing a hidden textarea
+    if (textFocusRaf) { cancelAnimationFrame(textFocusRaf); textFocusRaf = null; }
     drawing = null;
     if (!textArea) return;
     textArea.style.display = 'none';
@@ -926,7 +942,7 @@
     textArea.onkeydown     = null;
   }
 
-  /* ─── Sync toolbar UI to selected element's properties ───────────────────── */
+  /* ─── Toolbar sync ────────────────────────────────────────────────────────── */
   function syncToolbarToElement(el) {
     if (!el) return;
     if (el.stroke) {
@@ -961,17 +977,16 @@
     }
   }
 
-  /* ─── Apply style to selected element ────────────────────────────────────── */
   function applyToSelected(props) {
     if (!selected) return;
     const el = elements.find(e => e.id === selected);
     if (!el) return;
     Object.assign(el, props);
     pushHistory();
-    scheduleRender();
+    render();
   }
 
-  /* ─── Paste from clipboard ────────────────────────────────────────────────── */
+  /* ─── Paste image from clipboard ─────────────────────────────────────────── */
   async function onPaste(e) {
     if (!isOpen) return;
     const focused = document.activeElement;
@@ -991,7 +1006,7 @@
           imgCache.set(dataUrl, img);
           elements.push({ id: genId(), type: 'image', x: cx - w/2, y: cy - h/2, w, h, src: dataUrl, opacity: 1 });
           pushHistory();
-          scheduleRender();
+          render();
         };
         img.src = dataUrl;
       };
@@ -1000,7 +1015,7 @@
     }
   }
 
-  /* ─── Resources panel (inside canvas overlay) ─────────────────────────────── */
+  /* ─── Resources panel ─────────────────────────────────────────────────────── */
   function hideResPanel() {
     const panel = document.getElementById('canvasResPanel');
     if (panel) panel.classList.remove('canvas-res-panel--open');
@@ -1020,8 +1035,7 @@
       item.title     = r.name || (r.type === 'image' ? 'Image' : r.content.slice(0, 40));
       if (r.type === 'image') {
         const img = document.createElement('img');
-        img.src = r.content;
-        img.alt = r.name || 'Resource';
+        img.src = r.content; img.alt = r.name || 'Resource';
         item.appendChild(img);
       } else {
         item.textContent = r.content.length > 80 ? r.content.slice(0, 80) + '…' : r.content;
@@ -1032,12 +1046,11 @@
   }
 
   function addResourceToCanvas(r) {
-    const cx = canvas.clientWidth  / 2;
-    const cy = canvas.clientHeight / 2;
+    const cx = canvas.clientWidth / 2, cy = canvas.clientHeight / 2;
     const { x: dx, y: dy } = toDoc(cx, cy);
     if (r.type === 'image') {
       const cached = imgCache.get(r.content);
-      const w = cached ? Math.min(cached.naturalWidth,  400) : 300;
+      const w = cached ? Math.min(cached.naturalWidth, 400) : 300;
       const h = cached ? Math.min(cached.naturalHeight, 400 * (cached.naturalHeight / (cached.naturalWidth || 1))) : 200;
       loadImg(r.content);
       elements.push({ id: genId(), type: 'image', x: dx - w/2, y: dy - h/2, w, h, src: r.content, opacity: 1 });
@@ -1047,10 +1060,10 @@
                       fontSize: activeStyle.fontSize, fill: 'none', width: 1, dash: false, opacity: 1 });
     }
     pushHistory();
-    scheduleRender();
+    render();
   }
 
-  /* ─── Toolbar ─────────────────────────────────────────────────────────────── */
+  /* ─── Toolbar setup ───────────────────────────────────────────────────────── */
   function setupToolbar() {
     document.querySelectorAll('[data-tool]').forEach(btn => {
       btn.addEventListener('click', () => selectTool(btn.dataset.tool));
@@ -1066,9 +1079,8 @@
       });
     });
 
-    const strokeInput = document.getElementById('strokeColorInput');
-    strokeInput?.addEventListener('input', () => {
-      activeStyle.stroke = strokeInput.value;
+    document.getElementById('strokeColorInput')?.addEventListener('input', e => {
+      activeStyle.stroke = e.target.value;
       document.querySelectorAll('[data-color]').forEach(s => s.classList.remove('color-active'));
       applyToSelected({ stroke: activeStyle.stroke });
     });
@@ -1085,7 +1097,7 @@
       });
     });
 
-    document.getElementById('fillColorInput')?.addEventListener('input', (e) => {
+    document.getElementById('fillColorInput')?.addEventListener('input', e => {
       if (activeStyle.fill !== 'none') {
         activeStyle.fill = e.target.value;
         applyToSelected({ fill: activeStyle.fill });
@@ -1107,9 +1119,8 @@
       applyToSelected({ dash: activeStyle.dash });
     });
 
-    const fsInput = document.getElementById('fontSizeInput');
-    fsInput?.addEventListener('change', () => {
-      activeStyle.fontSize = +fsInput.value || 20;
+    document.getElementById('fontSizeInput')?.addEventListener('change', e => {
+      activeStyle.fontSize = +e.target.value || 20;
       applyToSelected({ fontSize: activeStyle.fontSize });
     });
 
@@ -1121,18 +1132,18 @@
     });
     document.getElementById('canvasResClose')?.addEventListener('click', hideResPanel);
 
-    document.getElementById('canvasUndo')?.addEventListener('click', undo);
-    document.getElementById('canvasRedo')?.addEventListener('click', redo);
+    document.getElementById('canvasUndo') ?.addEventListener('click', undo);
+    document.getElementById('canvasRedo') ?.addEventListener('click', redo);
     document.getElementById('canvasClear')?.addEventListener('click', () => {
       if (!elements.length) return;
-      elements = []; selected = null; pushHistory(); scheduleRender();
+      elements = []; selected = null; pushHistory(); render();
     });
-    document.getElementById('canvasZoomIn')  ?.addEventListener('click', () => zoom(1.25));
-    document.getElementById('canvasZoomOut') ?.addEventListener('click', () => zoom(0.8));
-    document.getElementById('canvasZoomReset')?.addEventListener('click', () => { vp = { x: 0, y: 0, s: 1 }; scheduleRender(); });
-    document.getElementById('saveDrawingBtn')?.addEventListener('click', doSave);
-    document.getElementById('cancelDrawingBtn')?.addEventListener('click', closeCanvas);
-    document.getElementById('canvasCloseBtn')?.addEventListener('click', closeCanvas);
+    document.getElementById('canvasZoomIn')   ?.addEventListener('click', () => zoom(1.25));
+    document.getElementById('canvasZoomOut')  ?.addEventListener('click', () => zoom(0.8));
+    document.getElementById('canvasZoomReset')?.addEventListener('click', () => { vp = { x: 0, y: 0, s: 1 }; render(); });
+    document.getElementById('saveDrawingBtn')    ?.addEventListener('click', doSave);
+    document.getElementById('cancelDrawingBtn')  ?.addEventListener('click', closeCanvas);
+    document.getElementById('canvasCloseBtn')    ?.addEventListener('click', closeCanvas);
     document.getElementById('downloadDrawingBtn')?.addEventListener('click', doDownload);
   }
 
@@ -1140,14 +1151,14 @@
     activeTool = tool;
     finishText();
     document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('tool-active', b.dataset.tool === tool));
-    // Show font-size control only for text tool
     const fg = document.getElementById('fontSizeGroup');
     if (fg) fg.style.display = tool === 'text' ? '' : 'none';
     syncCursor();
   }
 
   function syncCursor() {
-    const map = { select: 'default', pen: 'crosshair', rect: 'crosshair', ellipse: 'crosshair', line: 'crosshair', arrow: 'crosshair', text: 'text', eraser: 'cell' };
+    const map = { select: 'default', pen: 'crosshair', rect: 'crosshair', ellipse: 'crosshair',
+                  line: 'crosshair', arrow: 'crosshair', text: 'text', eraser: 'cell' };
     canvas.style.cursor = spaceDown ? 'grab' : (map[activeTool] || 'crosshair');
   }
 
@@ -1157,7 +1168,7 @@
     vp.x = cx - (cx - vp.x) * (ns / vp.s);
     vp.y = cy - (cy - vp.y) * (ns / vp.s);
     vp.s = ns;
-    scheduleRender();
+    render();
   }
 
   function updateZoomLabel() {
@@ -1168,11 +1179,9 @@
   /* ─── Export ──────────────────────────────────────────────────────────────── */
   function snapshot(w, h) {
     const off = document.createElement('canvas');
-    off.width  = w; off.height = h;
-    const oc   = off.getContext('2d');
-    const sw   = canvas.clientWidth;
-    const sh   = canvas.clientHeight;
-    const rx   = w / sw, ry = h / sh;
+    off.width = w; off.height = h;
+    const oc  = off.getContext('2d');
+    const rx  = w / canvas.clientWidth, ry = h / canvas.clientHeight;
 
     oc.fillStyle = BG_COLOR;
     oc.fillRect(0, 0, w, h);
@@ -1180,8 +1189,7 @@
     oc.translate(vp.x * rx, vp.y * ry);
     oc.scale(vp.s * rx, vp.s * ry);
 
-    const saved = ctx;
-    ctx = oc;
+    const saved = ctx; ctx = oc;
     elements.forEach(el => renderEl(oc, el));
     ctx = saved;
 
@@ -1197,12 +1205,9 @@
 
   function doDownload() {
     const title = document.getElementById('drawingTitle')?.value?.trim() || 'drawing';
-    const W = canvas.clientWidth * 2;
-    const H = canvas.clientHeight * 2;
-    const off = snapshot(W, H);
-    const url = off.toDataURL('image/png');
+    const off = snapshot(canvas.clientWidth * 2, canvas.clientHeight * 2);
     const a   = document.createElement('a');
-    a.href     = url;
+    a.href     = off.toDataURL('image/png');
     a.download = title + '.png';
     a.click();
   }
@@ -1213,10 +1218,8 @@
     btn.disabled    = true;
     btn.textContent = 'Saving…';
     try {
-      const preview  = exportPreview();
-      const elemJson = JSON.stringify(elements);
       if (typeof window.CanvasApp.onSave === 'function') {
-        await window.CanvasApp.onSave(title, elemJson, preview);
+        await window.CanvasApp.onSave(title, JSON.stringify(elements), exportPreview());
       }
       closeCanvas();
     } catch (e) {

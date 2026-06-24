@@ -1738,6 +1738,21 @@ pre[class*="language-"] {
 }
 .resource-delete-btn:hover { color: #f87171; background: rgba(248,113,113,.1); }
 
+/* ─── Canvas fullscreen ────────────────────────────────────────────────────── */
+.canvas-overlay:fullscreen,
+.canvas-overlay:-webkit-full-screen {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  background: #0b0b16;
+}
+.canvas-overlay:fullscreen .canvas-main,
+.canvas-overlay:-webkit-full-screen .canvas-main {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ─── Canvas context menu ──────────────────────────────────────────────────── */
 .canvas-ctx-menu {
   position: fixed;
