@@ -983,7 +983,9 @@ pre[class*="language-"] {
   border-bottom: 1px solid var(--border);
 }
 .hand-req-item:last-child { border-bottom: none; }
-.hand-req-name { flex: 1; font-size: .85rem; color: var(--text); font-weight: 500; }
+.hand-req-info { flex: 1; display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.hand-req-name  { font-size: .85rem; color: var(--text); font-weight: 500; }
+.hand-req-ws    { font-size: .73rem; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hand-approve-btn, .hand-deny-btn {
   display: flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; border-radius: 6px; border: none; cursor: pointer;
@@ -1030,6 +1032,7 @@ pre[class*="language-"] {
   margin-bottom: 2px;
 }
 .hand-alert-sub { font-size: .75rem; color: var(--text-3); }
+.hand-alert-sub strong { color: var(--text-2); font-weight: 600; }
 .hand-alert-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .hand-alert-approve, .hand-alert-deny {
   padding: 5px 11px; border-radius: 6px; border: none;

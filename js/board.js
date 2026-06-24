@@ -274,8 +274,8 @@
     });
 
     // Admin: a user raised their hand — show a prominent notification
-    socket.on('screen:hand-raised', ({ userId, username, profilePic }) => {
-      if (isAdmin) showHandRaiseAlert(userId, username, profilePic);
+    socket.on('screen:hand-raised', ({ userId, username, profilePic, wsId }) => {
+      if (isAdmin) showHandRaiseAlert(userId, username, profilePic, wsId);
     });
 
     // Admin: receive updated queue of pending requests
@@ -1857,7 +1857,7 @@
     frameCtx    = null;
   }
 
-  function showHandRaiseAlert(userId, username, profilePic) {
+  function showHandRaiseAlert(userId, username, profilePic, wsId) {
     const container = document.getElementById('handAlertContainer');
     if (!container) return;
 
@@ -1865,6 +1865,8 @@
       ? `background:none;background-image:url(${profilePic});background-size:cover;background-position:center`
       : `background:${getAvatarColor(username)}`;
     const avatarContent = profilePic ? '' : username[0].toUpperCase();
+    const wsName        = wsId ? (workspaces.find(w => w._id === wsId)?.name || '') : '';
+    const wsSub         = wsName ? `wants to share · <strong>${escapeHtml(wsName)}</strong>` : 'wants to share their screen';
 
     const el = document.createElement('div');
     el.className = 'hand-alert';
@@ -1872,7 +1874,7 @@
       <div class="avatar avatar-xs" style="${avatarStyle}">${avatarContent}</div>
       <div class="hand-alert-body">
         <div class="hand-alert-title">${escapeHtml(username)}</div>
-        <div class="hand-alert-sub">wants to share their screen</div>
+        <div class="hand-alert-sub">${wsSub}</div>
       </div>
       <div class="hand-alert-actions">
         <button class="hand-alert-approve">Allow</button>
@@ -1922,7 +1924,7 @@
   function raiseHand() {
     isHandRaised = true;
     setWaitingUI(true);
-    socket.emit('screen:raise-hand');
+    socket.emit('screen:raise-hand', { wsId: currentWorkspaceId });
   }
 
   function lowerHand() {
@@ -1966,15 +1968,19 @@
     badge.style.display  = count > 0 ? 'inline-flex' : 'none';
     empty.style.display  = count === 0 ? 'block' : 'none';
 
-    list.innerHTML = handRaiseQueue.map(({ userId, username, profilePic }) => {
+    list.innerHTML = handRaiseQueue.map(({ userId, username, profilePic, wsId }) => {
       const avatarStyle   = profilePic
         ? `background:none;background-image:url(${profilePic});background-size:cover;background-position:center`
         : `background:${getAvatarColor(username)}`;
       const avatarContent = profilePic ? '' : username[0].toUpperCase();
+      const wsName        = wsId ? (workspaces.find(w => w._id === wsId)?.name || '') : '';
       return `
         <li class="hand-req-item" data-user-id="${escapeHtml(userId)}">
           <div class="avatar avatar-xs" style="${avatarStyle}">${avatarContent}</div>
-          <span class="hand-req-name">${escapeHtml(username)}</span>
+          <div class="hand-req-info">
+            <span class="hand-req-name">${escapeHtml(username)}</span>
+            ${wsName ? `<span class="hand-req-ws">${escapeHtml(wsName)}</span>` : ''}
+          </div>
           <button class="hand-approve-btn" title="Approve" data-approve="${escapeHtml(userId)}">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
               <polyline points="20 6 9 17 4 12"/>
