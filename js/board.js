@@ -6,6 +6,7 @@
 
   // ─── State ─────────────────────────────────────────────────────────────────
   let clips              = [];
+  let drawings           = [];
   let currentPage        = 1;
   let totalPages         = 1;
   let socket             = null;
@@ -112,6 +113,7 @@
   connectSocket();
   loadWorkspaces();
   loadClips();
+  loadDrawings();
   setupPaste();
   setupDragDrop();
   setupFileUpload();
@@ -121,6 +123,7 @@
   setupWorkspaceSidebar();
   setupScreenShare();
   setupOnlineUsersPanel();
+  setupDrawings();
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
   // ─── Avatar helpers ────────────────────────────────────────────────────────
@@ -318,6 +321,27 @@
       workspaces = workspaces.filter((w) => w._id !== id);
       document.querySelector(`.ws-item[data-id="${id}"]`)?.remove();
       if (currentWorkspaceId === id) selectWorkspace(null);
+    });
+
+    // ─── Drawings ───────────────────────────────────────────────────────────
+    socket.on('drawing:new', ({ data }) => {
+      if (document.querySelector(`.drawing-card[data-id="${data._id}"]`)) return;
+      drawings.unshift(data);
+      const drawingsGrid = document.getElementById('drawingsGrid');
+      drawingsGrid.insertBefore(buildDrawingCard(data), drawingsGrid.firstChild);
+      updateDrawingCount(drawings.length);
+      const drawingsEmpty = document.getElementById('drawingsEmpty');
+      if (drawingsEmpty) drawingsEmpty.style.display = 'none';
+    });
+
+    socket.on('drawing:deleted', ({ id }) => {
+      drawings = drawings.filter(d => d._id !== id);
+      document.querySelector(`.drawing-card[data-id="${id}"]`)?.remove();
+      updateDrawingCount(drawings.length);
+      if (drawings.length === 0) {
+        const drawingsEmpty = document.getElementById('drawingsEmpty');
+        if (drawingsEmpty) drawingsEmpty.style.display = 'flex';
+      }
     });
 
     // ─── Screen share signaling ─────────────────────────────────────────────
@@ -544,7 +568,7 @@
   }
 
   function updateClipCount(total) {
-    clipCountEl.textContent = total > 0 ? `(${total})` : '';
+    clipCountEl.textContent = total > 0 ? total : '';
   }
 
   // ─── Card builder ──────────────────────────────────────────────────────────
@@ -1135,11 +1159,7 @@
 
   function updateBoardTitle(name) {
     const title = document.getElementById('boardTitle');
-    if (title) {
-      const count = document.getElementById('clipCount');
-      title.textContent = name + ' ';
-      title.appendChild(count);
-    }
+    if (title) title.textContent = name;
   }
 
   function updateWorkspaceCountBadge(wsId, count) {
@@ -1999,6 +2019,169 @@
       img.onerror = () => reject(new Error('Failed to read image'));
       img.src = url;
     });
+  }
+
+  // ─── Drawings ──────────────────────────────────────────────────────────────
+  function setupDrawings() {
+    // Tab switching
+    const tabClips    = document.getElementById('tabClips');
+    const tabDrawings = document.getElementById('tabDrawings');
+    const clipsSection    = document.getElementById('clipsSection');
+    const drawingsSection = document.getElementById('drawingsSection');
+
+    tabClips.addEventListener('click', () => {
+      tabClips.classList.add('section-tab--active');
+      tabDrawings.classList.remove('section-tab--active');
+      clipsSection.style.display    = '';
+      drawingsSection.style.display = 'none';
+    });
+    tabDrawings.addEventListener('click', () => {
+      tabDrawings.classList.add('section-tab--active');
+      tabClips.classList.remove('section-tab--active');
+      drawingsSection.style.display = '';
+      clipsSection.style.display    = 'none';
+    });
+
+    // New drawing button
+    document.getElementById('newDrawingBtn').addEventListener('click', () => {
+      CanvasApp.open();
+    });
+
+    // Canvas save callback
+    window.CanvasApp.onSave = async (title, elementsJson, preview) => {
+      try {
+        await api.drawings.create(title, elementsJson, preview);
+        showToast('Drawing saved!', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to save drawing', 'error');
+        throw err; // re-throw so canvas.js keeps the overlay open
+      }
+    };
+
+    // Show font size input only for text tool
+    document.querySelectorAll('[data-tool]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const fg = document.getElementById('fontSizeGroup');
+        if (fg) fg.style.display = btn.dataset.tool === 'text' ? 'flex' : 'none';
+      });
+    });
+
+    CanvasApp.init();
+  }
+
+  async function loadDrawings() {
+    const loadingEl  = document.getElementById('drawingsLoading');
+    const emptyEl    = document.getElementById('drawingsEmpty');
+    const grid       = document.getElementById('drawingsGrid');
+    const countEl    = document.getElementById('drawingCount');
+
+    if (loadingEl) loadingEl.style.display = 'flex';
+    try {
+      const res = await api.drawings.list();
+      drawings  = res.data || [];
+      grid.innerHTML = '';
+      if (drawings.length === 0) {
+        if (emptyEl) emptyEl.style.display = 'flex';
+      } else {
+        drawings.forEach(d => grid.appendChild(buildDrawingCard(d)));
+        if (emptyEl) emptyEl.style.display = 'none';
+      }
+      updateDrawingCount(drawings.length);
+    } catch (err) {
+      showToast('Could not load drawings', 'error');
+    } finally {
+      if (loadingEl) loadingEl.style.display = 'none';
+    }
+  }
+
+  function buildDrawingCard(drawing) {
+    const isOwn   = drawing.authorName === user.username;
+    const canDel  = isOwn || isAdmin;
+
+    const card = document.createElement('div');
+    card.className = 'clip-card clip-card--drawing';
+    card.dataset.id = drawing._id;
+
+    const avatarStyle = profilePicCache[drawing.authorName]
+      ? `background-image:url(${profilePicCache[drawing.authorName]});background-size:cover;background-position:center`
+      : `background:${getAvatarColor(drawing.authorName)}`;
+
+    card.innerHTML = `
+      <div class="clip-card-preview" title="Open in canvas">
+        <img src="${drawing.preview}" alt="${escapeHtml(drawing.title)}" loading="lazy" />
+      </div>
+      <div class="clip-card-header">
+        <span class="clip-title-text">${escapeHtml(drawing.title || 'Untitled')}</span>
+        <div class="clip-actions">
+          ${canDel ? `<button class="clip-action-btn clip-delete-btn drawing-delete-btn" title="Delete drawing">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
+              <path d="M10 11v6M14 11v6M9 6V4h6v2"/>
+            </svg>
+          </button>` : ''}
+        </div>
+      </div>
+      <div class="clip-meta">
+        <div class="clip-author">
+          <div class="avatar avatar-xs" style="${avatarStyle}">${!profilePicCache[drawing.authorName] ? drawing.authorName[0].toUpperCase() : ''}</div>
+          <span class="author-name">${escapeHtml(drawing.authorName)}</span>
+        </div>
+        <span class="clip-time">${timeAgo(drawing.createdAt)}</span>
+      </div>
+      <div class="drawing-card-footer">
+        <button class="btn-download-drawing" title="Download as PNG">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Download
+        </button>
+        <button class="btn-open-drawing" title="Open in canvas">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+          Open
+        </button>
+      </div>`;
+
+    // Preview click → open in canvas
+    card.querySelector('.clip-card-preview').addEventListener('click', () => {
+      CanvasApp.open(drawing.elements);
+      document.getElementById('drawingTitle').value = drawing.title || '';
+    });
+
+    // Open button → same
+    card.querySelector('.btn-open-drawing').addEventListener('click', () => {
+      CanvasApp.open(drawing.elements);
+      document.getElementById('drawingTitle').value = drawing.title || '';
+    });
+
+    // Download button → download the preview PNG
+    card.querySelector('.btn-download-drawing').addEventListener('click', () => {
+      const a       = document.createElement('a');
+      a.href        = drawing.preview;
+      a.download    = (drawing.title || 'drawing') + '.png';
+      a.click();
+    });
+
+    // Delete button
+    card.querySelector('.drawing-delete-btn')?.addEventListener('click', async () => {
+      if (!confirm(`Delete drawing "${drawing.title}"?`)) return;
+      try {
+        await api.drawings.remove(drawing._id);
+      } catch (err) {
+        showToast(err.message || 'Failed to delete drawing', 'error');
+      }
+    });
+
+    return card;
+  }
+
+  function updateDrawingCount(n) {
+    const el = document.getElementById('drawingCount');
+    if (el) el.textContent = n > 0 ? n : '';
   }
 
   // ─── Utils ─────────────────────────────────────────────────────────────────

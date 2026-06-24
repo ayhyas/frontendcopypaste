@@ -447,6 +447,7 @@ kbd {
 
 .board-header {
   display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 10px;
   margin-bottom: 20px;
 }
 .board-title {
@@ -1339,6 +1340,289 @@ pre[class*="language-"] {
   color: var(--text); font-size: .845rem; font-family: inherit;
   padding: 1px 5px; outline: none;
 }
+
+/* ─── New drawing button ───────────────────────────────────────────────────── */
+.btn-new-drawing {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 13px;
+  background: rgba(124,58,237,.18);
+  border: 1px solid rgba(124,58,237,.4);
+  border-radius: 8px;
+  color: #a78bfa;
+  font-size: .82rem; font-weight: 500; font-family: inherit;
+  cursor: pointer; white-space: nowrap;
+  transition: background .15s, border-color .15s;
+}
+.btn-new-drawing:hover {
+  background: rgba(124,58,237,.3);
+  border-color: rgba(124,58,237,.6);
+}
+
+/* ─── Section tabs ─────────────────────────────────────────────────────────── */
+.section-tabs { display: flex; gap: 4px; }
+.section-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-2);
+  font-size: .82rem; font-weight: 500; font-family: inherit;
+  cursor: pointer;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.section-tab:hover { background: var(--bg-2); color: var(--text); }
+.section-tab--active {
+  background: rgba(124,58,237,.15);
+  border-color: rgba(124,58,237,.4);
+  color: #a78bfa;
+}
+.drawing-count {
+  font-size: .72rem; color: var(--text-3);
+  background: rgba(255,255,255,.06);
+  padding: 1px 5px; border-radius: 10px;
+}
+
+/* ─── Drawing card (preview image) ────────────────────────────────────────── */
+.clip-card--drawing .clip-card-preview {
+  width: 100%; aspect-ratio: 16/9;
+  border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border);
+  background: #0b0b16;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+.clip-card--drawing .clip-card-preview img {
+  width: 100%; height: 100%; object-fit: cover;
+}
+.btn-download-drawing {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 6px;
+  background: rgba(124,58,237,.15);
+  border: 1px solid rgba(124,58,237,.3);
+  color: #a78bfa;
+  font-size: .76rem; font-weight: 500; font-family: inherit;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-download-drawing:hover { background: rgba(124,58,237,.28); }
+
+.drawing-card-footer {
+  display: flex; align-items: center; gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+.btn-open-drawing {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 6px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: .76rem; font-weight: 500; font-family: inherit;
+  cursor: pointer;
+  transition: background .15s;
+}
+.btn-open-drawing:hover { background: rgba(255,255,255,.1); color: var(--text); }
+
+/* ─── Canvas overlay ───────────────────────────────────────────────────────── */
+.canvas-overlay {
+  position: fixed; inset: 0; z-index: 1100;
+  display: none; flex-direction: column;
+  background: #0b0b16;
+}
+.canvas-overlay--open { display: flex; }
+
+/* ─── Canvas toolbar ───────────────────────────────────────────────────────── */
+.canvas-toolbar {
+  display: flex; align-items: center; gap: 2px;
+  flex-shrink: 0;
+  padding: 6px 10px;
+  background: #0f0f1a;
+  border-bottom: 1px solid rgba(255,255,255,.07);
+  overflow-x: auto;
+  min-height: 48px;
+}
+.canvas-toolbar::-webkit-scrollbar { height: 3px; }
+.canvas-divider {
+  width: 1px; height: 24px; flex-shrink: 0;
+  background: rgba(255,255,255,.08);
+  margin: 0 4px;
+}
+.canvas-tool-group {
+  display: flex; align-items: center; gap: 2px; flex-shrink: 0;
+}
+.canvas-tool-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.canvas-tool-btn:hover { background: rgba(255,255,255,.07); color: var(--text); }
+.canvas-tool-btn.tool-active {
+  background: rgba(124,58,237,.22);
+  border-color: rgba(124,58,237,.45);
+  color: #a78bfa;
+}
+.canvas-close-btn { color: var(--text-3); }
+.canvas-close-btn:hover { background: rgba(239,68,68,.12); color: var(--error); }
+
+/* Colors */
+.canvas-colors { gap: 4px; }
+.canvas-color-swatch {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer; flex-shrink: 0;
+  transition: transform .1s, border-color .12s;
+}
+.canvas-color-swatch:hover { transform: scale(1.15); }
+.canvas-color-swatch.color-active {
+  border-color: #fff;
+  outline: 2px solid rgba(255,255,255,.3);
+  outline-offset: 1px;
+}
+.canvas-color-custom {
+  width: 22px; height: 22px;
+  border-radius: 50%; border: 2px solid rgba(255,255,255,.18);
+  cursor: pointer; background: none; padding: 0;
+  overflow: hidden;
+}
+.canvas-color-custom::-webkit-color-swatch-wrapper { padding: 0; }
+.canvas-color-custom::-webkit-color-swatch { border: none; border-radius: 50%; }
+
+/* Fill buttons */
+.canvas-fill-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.canvas-fill-btn:hover { background: rgba(255,255,255,.07); color: var(--text); }
+.canvas-fill-btn.fill-active {
+  background: rgba(124,58,237,.2);
+  border-color: rgba(124,58,237,.4);
+  color: #a78bfa;
+}
+
+/* Stroke width buttons */
+.canvas-sw-group { gap: 4px; }
+.canvas-sw-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 28px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+.canvas-sw-btn:hover { background: rgba(255,255,255,.07); }
+.canvas-sw-btn.sw-active {
+  background: rgba(124,58,237,.2);
+  border-color: rgba(124,58,237,.4);
+}
+.sw-line { display: block; width: 18px; border-radius: 2px; background: var(--text-2); }
+.sw-1  { height: 1px; }
+.sw-2  { height: 2px; }
+.sw-4  { height: 4px; }
+.sw-8  { height: 7px; }
+
+/* Font size input */
+.canvas-font-group { gap: 4px; }
+.canvas-label { font-size: .73rem; color: var(--text-3); white-space: nowrap; }
+.canvas-font-input {
+  width: 46px; padding: 3px 5px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text); font-size: .8rem; font-family: inherit;
+  text-align: center; outline: none;
+}
+.canvas-font-input:focus { border-color: rgba(124,58,237,.5); }
+
+/* Zoom */
+.canvas-zoom-group { gap: 2px; }
+.canvas-zoom-level {
+  min-width: 40px; text-align: center;
+  font-size: .76rem; color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Canvas area ──────────────────────────────────────────────────────────── */
+.canvas-area {
+  flex: 1; position: relative; overflow: hidden;
+}
+#drawingCanvas {
+  display: block; cursor: crosshair;
+  position: absolute; inset: 0;
+}
+.canvas-text-input {
+  position: absolute;
+  background: transparent;
+  border: 1px dashed rgba(124,58,237,.5);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-family: Inter, system-ui, sans-serif;
+  line-height: 1.4;
+  color: inherit;
+  outline: none;
+  resize: none;
+  z-index: 10;
+  min-width: 80px;
+  overflow: hidden;
+}
+
+/* ─── Canvas footer ────────────────────────────────────────────────────────── */
+.canvas-footer {
+  display: flex; align-items: center; gap: 10px;
+  flex-shrink: 0;
+  padding: 8px 14px;
+  background: #0f0f1a;
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+.canvas-title-input {
+  flex: 1; min-width: 0; max-width: 340px;
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text); font-size: .9rem; font-family: inherit;
+  padding: 6px 12px; outline: none;
+}
+.canvas-title-input:focus { border-color: rgba(124,58,237,.5); }
+.canvas-footer-actions { display: flex; gap: 8px; margin-left: auto; }
+.canvas-footer-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px; border-radius: 8px;
+  font-size: .84rem; font-weight: 500; font-family: inherit;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.canvas-dl-btn {
+  background: rgba(255,255,255,.05);
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+.canvas-dl-btn:hover { background: rgba(255,255,255,.09); color: var(--text); }
+.canvas-cancel-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-2);
+}
+.canvas-cancel-btn:hover { background: rgba(255,255,255,.05); color: var(--text); }
+.canvas-save-btn {
+  background: rgba(124,58,237,.22);
+  border: 1px solid rgba(124,58,237,.45);
+  color: #a78bfa;
+}
+.canvas-save-btn:hover { background: rgba(124,58,237,.35); }
+.canvas-save-btn:disabled { opacity: .5; cursor: not-allowed; }
 
 /* ─── Scrollbar ────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }

@@ -133,6 +133,12 @@
           </svg>
           <span id="shareScreenLabel">Share screen</span>
         </button>
+        <button class="btn-new-drawing" id="newDrawingBtn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+          </svg>
+          Draw
+        </button>
       </div>
       <input type="file" id="fileInput" hidden multiple />
     </div>
@@ -216,31 +222,65 @@
       </div>
 
       <div class="board-header">
-        <h3 class="board-title" id="boardTitle">All clips <span class="clip-count" id="clipCount"></span></h3>
-      </div>
-
-      <!-- Empty state -->
-      <div class="empty-state" id="emptyState" style="display:none">
-        <div class="empty-icon">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
-            <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
-            <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
-          </svg>
+        <h3 class="board-title" id="boardTitle">All clips</h3>
+        <div class="section-tabs">
+          <button class="section-tab section-tab--active" id="tabClips">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+            </svg>
+            Clips <span class="clip-count" id="clipCount"></span>
+          </button>
+          <button class="section-tab" id="tabDrawings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+            Drawings <span class="drawing-count" id="drawingCount"></span>
+          </button>
         </div>
-        <p id="emptyStateText">No clips yet — be the first to share!</p>
       </div>
 
-      <!-- Loading state -->
-      <div class="loading-state" id="loadingState">
-        <div class="loader"></div>
+      <!-- ─── Clips section ──────────────────────────────────────────── -->
+      <div id="clipsSection">
+        <!-- Empty state -->
+        <div class="empty-state" id="emptyState" style="display:none">
+          <div class="empty-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+              <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>
+              <rect x="8" y="2" width="8" height="4" rx="1" ry="1"/>
+            </svg>
+          </div>
+          <p id="emptyStateText">No clips yet — be the first to share!</p>
+        </div>
+
+        <!-- Loading state -->
+        <div class="loading-state" id="loadingState">
+          <div class="loader"></div>
+        </div>
+
+        <!-- Clips grid -->
+        <div class="clips-grid" id="clipsGrid"></div>
+
+        <!-- Load more -->
+        <div class="load-more-wrapper" id="loadMoreWrapper" style="display:none">
+          <button class="btn-load-more" id="loadMoreBtn">Load more clips</button>
+        </div>
       </div>
 
-      <!-- Clips grid -->
-      <div class="clips-grid" id="clipsGrid"></div>
-
-      <!-- Load more -->
-      <div class="load-more-wrapper" id="loadMoreWrapper" style="display:none">
-        <button class="btn-load-more" id="loadMoreBtn">Load more clips</button>
+      <!-- ─── Drawings section ───────────────────────────────────────── -->
+      <div id="drawingsSection" style="display:none">
+        <div class="empty-state" id="drawingsEmpty" style="display:none">
+          <div class="empty-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+              <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>
+          </div>
+          <p>No drawings yet — click <strong>Draw</strong> to create one!</p>
+        </div>
+        <div class="loading-state" id="drawingsLoading" style="display:none">
+          <div class="loader"></div>
+        </div>
+        <div class="clips-grid" id="drawingsGrid"></div>
       </div>
     </main>
 
@@ -341,6 +381,212 @@
     </div>
   </div>
 
+  <!-- ─── Canvas drawing overlay ─────────────────────────────────────── -->
+  <div class="canvas-overlay" id="canvasOverlay">
+
+    <div class="canvas-toolbar">
+      <!-- Tools -->
+      <div class="canvas-tool-group">
+        <button class="canvas-tool-btn tool-active" data-tool="pen" title="Pen (P)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" data-tool="select" title="Select (V)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="m3 3 7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/><path d="m13 13 6 6"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" data-tool="rect" title="Rectangle (R)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" data-tool="ellipse" title="Ellipse (E)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <ellipse cx="12" cy="12" rx="10" ry="6"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" data-tool="line" title="Line (L)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="5" y1="19" x2="19" y2="5"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" data-tool="arrow" title="Arrow (A)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="5" y1="19" x2="19" y2="5"/>
+            <polyline points="9 5 19 5 19 15"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" data-tool="text" title="Text (T)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="4 7 4 4 20 4 20 7"/>
+            <line x1="9" y1="20" x2="15" y2="20"/>
+            <line x1="12" y1="4" x2="12" y2="20"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" data-tool="eraser" title="Eraser (X)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M20 20H7L3 16l10-10 7 7-3.5 3.5"/><path d="m6.5 17.5 3-3"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="canvas-divider"></div>
+
+      <!-- Stroke colors -->
+      <div class="canvas-tool-group canvas-colors">
+        <button class="canvas-color-swatch color-active" data-color="#e2e8f0" style="background:#e2e8f0" title="White"></button>
+        <button class="canvas-color-swatch" data-color="#f87171" style="background:#f87171" title="Red"></button>
+        <button class="canvas-color-swatch" data-color="#fb923c" style="background:#fb923c" title="Orange"></button>
+        <button class="canvas-color-swatch" data-color="#facc15" style="background:#facc15" title="Yellow"></button>
+        <button class="canvas-color-swatch" data-color="#4ade80" style="background:#4ade80" title="Green"></button>
+        <button class="canvas-color-swatch" data-color="#60a5fa" style="background:#60a5fa" title="Blue"></button>
+        <button class="canvas-color-swatch" data-color="#a78bfa" style="background:#a78bfa" title="Purple"></button>
+        <button class="canvas-color-swatch" data-color="#f472b6" style="background:#f472b6" title="Pink"></button>
+        <input type="color" id="strokeColorInput" class="canvas-color-custom" value="#e2e8f0" title="Custom color" />
+      </div>
+
+      <div class="canvas-divider"></div>
+
+      <!-- Fill -->
+      <div class="canvas-tool-group">
+        <button class="canvas-fill-btn fill-active" data-fill="none" title="No fill">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <rect x="1" y="1" width="12" height="12" rx="1" stroke="currentColor" stroke-width="1.5"/>
+            <line x1="1" y1="13" x2="13" y2="1" stroke="currentColor" stroke-width="1.5"/>
+          </svg>
+        </button>
+        <button class="canvas-fill-btn" data-fill="rgba(148,163,184,0.2)" title="Solid fill">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+            <rect x="1" y="1" width="12" height="12" rx="1" stroke="currentColor" stroke-width="1.5" fill="currentColor" fill-opacity="0.4"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="canvas-divider"></div>
+
+      <!-- Stroke width -->
+      <div class="canvas-tool-group canvas-sw-group">
+        <button class="canvas-sw-btn" data-sw="1" title="Thin"><span class="sw-line sw-1"></span></button>
+        <button class="canvas-sw-btn sw-active" data-sw="2" title="Medium"><span class="sw-line sw-2"></span></button>
+        <button class="canvas-sw-btn" data-sw="4" title="Thick"><span class="sw-line sw-4"></span></button>
+        <button class="canvas-sw-btn" data-sw="8" title="Heavy"><span class="sw-line sw-8"></span></button>
+      </div>
+
+      <div class="canvas-divider"></div>
+
+      <!-- Dash / Font size -->
+      <div class="canvas-tool-group">
+        <button class="canvas-tool-btn" id="dashToggle" title="Dashed stroke">
+          <svg width="16" height="10" viewBox="0 0 16 10">
+            <line x1="0" y1="5" x2="4" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="7" y1="5" x2="11" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <line x1="14" y1="5" x2="16" y2="5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="canvas-tool-group canvas-font-group" id="fontSizeGroup" style="display:none">
+        <label class="canvas-label" for="fontSizeInput">px</label>
+        <input type="number" id="fontSizeInput" class="canvas-font-input" value="20" min="8" max="120" step="2" />
+      </div>
+
+      <div style="flex:1"></div>
+
+      <!-- Undo / Redo / Clear -->
+      <div class="canvas-tool-group">
+        <button class="canvas-tool-btn" id="canvasUndo" title="Undo (Ctrl+Z)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 7v6h6"/><path d="M21 17a9 9 0 00-9-9 9 9 0 00-6 2.3L3 13"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" id="canvasRedo" title="Redo (Ctrl+Y)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 7v6h-6"/><path d="M3 17a9 9 0 019-9 9 9 0 016 2.3l3 2.7"/>
+          </svg>
+        </button>
+        <button class="canvas-tool-btn" id="canvasClear" title="Clear canvas">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="3 6 5 6 21 6"/>
+            <path d="M19 6l-1 14H6L5 6"/>
+            <path d="M10 11v6M14 11v6M9 6V4h6v2"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="canvas-divider"></div>
+
+      <!-- Zoom -->
+      <div class="canvas-tool-group canvas-zoom-group">
+        <button class="canvas-tool-btn" id="canvasZoomOut" title="Zoom out">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <span class="canvas-zoom-level" id="canvasZoomLevel">100%</span>
+        <button class="canvas-tool-btn" id="canvasZoomIn" title="Zoom in">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>
+        <button class="canvas-tool-btn" id="canvasZoomReset" title="Reset view">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="canvas-divider"></div>
+
+      <div class="canvas-tool-group">
+        <button class="canvas-tool-btn canvas-close-btn" id="canvasCloseBtn" title="Close">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div><!-- /.canvas-toolbar -->
+
+    <!-- Drawing canvas -->
+    <div class="canvas-area" id="canvasArea">
+      <canvas id="drawingCanvas"></canvas>
+      <textarea
+        id="canvasTextInput"
+        class="canvas-text-input"
+        rows="3"
+        placeholder="Type…"
+        style="display:none"
+      ></textarea>
+    </div>
+
+    <!-- Footer: title + save/discard -->
+    <div class="canvas-footer">
+      <input
+        type="text"
+        id="drawingTitle"
+        class="canvas-title-input"
+        placeholder="Drawing title (optional)…"
+        maxlength="100"
+        autocomplete="off"
+      />
+      <div class="canvas-footer-actions">
+        <button class="canvas-footer-btn canvas-dl-btn" id="downloadDrawingBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Download PNG
+        </button>
+        <button class="canvas-footer-btn canvas-cancel-btn" id="cancelDrawingBtn">Discard</button>
+        <button class="canvas-footer-btn canvas-save-btn" id="saveDrawingBtn">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/>
+            <polyline points="17 21 17 13 7 13 7 21"/>
+            <polyline points="7 3 7 8 15 8"/>
+          </svg>
+          Save &amp; Share
+        </button>
+      </div>
+    </div>
+  </div><!-- /.canvas-overlay -->
+
   <!-- ─── Toast container ────────────────────────────────────────────── -->
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
@@ -368,6 +614,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <script src="js/config.js"></script>
   <script src="js/api.js"></script>
+  <script src="js/canvas.js"></script>
   <script src="js/board.js"></script>
 </body>
 </html>
