@@ -124,10 +124,8 @@
   // ─── Bootstrap ─────────────────────────────────────────────────────────────
   initNavbar();
   connectSocket();
-  loadWorkspaces();
-  loadClips();
-  loadDrawings();
-  loadResources();
+  loadWorkspaces(); // kicks off loadClips / loadDrawings / loadResources once workspaces are known
+  if (!isAdmin) document.getElementById('wsAllItem').style.display = 'none';
   setupPaste();
   setupDragDrop();
   setupFileUpload();
@@ -322,6 +320,8 @@
       data.isLocked = !!data.lockPassword;
       workspaces.push(data);
       appendWorkspaceItem(data);
+      // Non-admin with no workspace selected: auto-select the newly arrived workspace
+      if (!isAdmin && currentWorkspaceId === null) selectWorkspace(data._id);
     });
 
     socket.on('workspace:updated', ({ data }) => {
@@ -353,6 +353,10 @@
 
     // ─── Drawings ───────────────────────────────────────────────────────────
     socket.on('drawing:new', ({ data }) => {
+      // Only show if it belongs to the current workspace view
+      const inScope = currentWorkspaceId === null
+        || String(data.workspace) === String(currentWorkspaceId);
+      if (!inScope) return;
       if (document.querySelector(`.drawing-card[data-id="${data._id}"]`)) return;
       drawings.unshift(data);
       const drawingsGrid = document.getElementById('drawingsGrid');
@@ -369,6 +373,10 @@
     });
 
     socket.on('resource:new', ({ resource }) => {
+      // Only show if it belongs to the current workspace view
+      const inScope = currentWorkspaceId === null
+        || String(resource.workspace) === String(currentWorkspaceId);
+      if (!inScope) return;
       if (resources.find(r => r._id === resource._id)) return;
       resources.unshift(resource);
       const grid    = document.getElementById('resourcesGrid');
@@ -1206,10 +1214,30 @@
     try {
       const { data } = await api.workspaces.list();
       workspaces = data;
-      const list = document.getElementById('wsList');
       workspaces.forEach((ws) => appendWorkspaceItem(ws));
+
+      if (!isAdmin) {
+        if (workspaces.length > 0) {
+          // selectWorkspace triggers loadClips + loadDrawings + loadResources
+          selectWorkspace(workspaces[0]._id);
+        } else {
+          // No workspaces yet: show placeholder state
+          document.getElementById('boardTitle').textContent = 'No workspaces';
+          document.getElementById('emptyStateText').textContent = 'No workspaces available — ask your admin to create one.';
+          document.getElementById('loadingState').style.display = 'none';
+          document.getElementById('emptyState').style.display = 'flex';
+          loadDrawings();
+          loadResources();
+        }
+      } else {
+        // Admin: load all content (null workspace = global view)
+        loadClips(1);
+        loadDrawings();
+        loadResources();
+      }
     } catch (err) {
       if (err.status === 401) logout();
+      else { loadClips(1); loadDrawings(); loadResources(); }
     }
   }
 
@@ -1311,10 +1339,12 @@
       emptyText.textContent = id ? 'No clips in this workspace yet.' : 'No clips yet — be the first to share!';
     }
 
-    // Reload clips for new view
+    // Reload all content for new workspace
     currentPage = 1;
     clips = [];
     loadClips(1);
+    loadDrawings();
+    loadResources();
   }
 
   function updateBoardTitle(name) {
@@ -2536,7 +2566,7 @@
     // Canvas save callback
     window.CanvasApp.onSave = async (title, elementsJson, preview) => {
       try {
-        await api.drawings.create(title, elementsJson, preview);
+        await api.drawings.create(title, elementsJson, preview, currentWorkspaceId);
         showToast('Drawing saved!', 'success');
       } catch (err) {
         showToast(err.message || 'Failed to save drawing', 'error');
@@ -2563,7 +2593,7 @@
 
     if (loadingEl) loadingEl.style.display = 'flex';
     try {
-      const res = await api.drawings.list();
+      const res = await api.drawings.list(currentWorkspaceId);
       drawings  = res.data || [];
       grid.innerHTML = '';
       if (drawings.length === 0) {
@@ -2681,7 +2711,7 @@
     const grid      = document.getElementById('resourcesGrid');
     if (loadingEl) loadingEl.style.display = 'flex';
     try {
-      const res = await api.resources.list();
+      const res = await api.resources.list(currentWorkspaceId);
       resources = res.data || [];
       renderResourcesGrid();
     } catch {
@@ -2756,7 +2786,7 @@
       const val = textInput?.value.trim();
       if (!val) return;
       try {
-        await api.resources.create('text', val.slice(0, 50), val);
+        await api.resources.create('text', val.slice(0, 50), val, currentWorkspaceId);
         textInput.value = '';
       } catch (err) {
         showToast(err.message || 'Failed to add resource', 'error');
@@ -2770,7 +2800,7 @@
     try {
       const dataUrl = await fileToDataUrl(file);
       const compressed = await compressResourceImage(dataUrl, 1200);
-      await api.resources.create('image', file.name.replace(/\.[^.]+$/, '') || 'Image', compressed);
+      await api.resources.create('image', file.name.replace(/\.[^.]+$/, '') || 'Image', compressed, currentWorkspaceId);
     } catch (err) {
       showToast(err.message || 'Failed to save image', 'error');
     }

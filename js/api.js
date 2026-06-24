@@ -46,14 +46,22 @@ const api = (() => {
       verify:     (id, password)  => request(`/api/workspaces/${id}/verify`, { method: 'POST', body: JSON.stringify({ password }) }),
     },
     drawings: {
-      list:   ()                           => request('/api/drawings'),
-      create: (title, elements, preview)   => request('/api/drawings', { method: 'POST', body: JSON.stringify({ title, elements, preview }) }),
-      remove: (id)                         => request(`/api/drawings/${id}`, { method: 'DELETE' }),
+      list:   (workspaceId) => {
+        const p = workspaceId ? `?workspace=${workspaceId}` : '';
+        return request(`/api/drawings${p}`);
+      },
+      create: (title, elements, preview, workspaceId) =>
+        request('/api/drawings', { method: 'POST', body: JSON.stringify({ title, elements, preview, workspaceId }) }),
+      remove: (id) => request(`/api/drawings/${id}`, { method: 'DELETE' }),
     },
     resources: {
-      list:   ()                             => request('/api/resources'),
-      create: (type, name, content)         => request('/api/resources', { method: 'POST', body: JSON.stringify({ type, name, content }) }),
-      remove: (id)                           => request(`/api/resources/${id}`, { method: 'DELETE' }),
+      list:   (workspaceId) => {
+        const p = workspaceId ? `?workspace=${workspaceId}` : '';
+        return request(`/api/resources${p}`);
+      },
+      create: (type, name, content, workspaceId) =>
+        request('/api/resources', { method: 'POST', body: JSON.stringify({ type, name, content, workspaceId }) }),
+      remove: (id) => request(`/api/resources/${id}`, { method: 'DELETE' }),
     },
   };
 })();
