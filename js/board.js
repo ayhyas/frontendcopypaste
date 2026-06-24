@@ -1486,6 +1486,11 @@
         btn.setAttribute('aria-expanded', 'false');
       }
     });
+
+    document.getElementById('exportPresenceBtn').addEventListener('click', (e) => {
+      e.stopPropagation(); // keep the panel open while generating
+      exportPresencePDF();
+    });
   }
 
   function renderOnlineUsers() {
@@ -1504,6 +1509,102 @@
           ${isYou ? '<span class="you-badge">you</span>' : ''}
         </li>`;
     }).join('');
+  }
+
+  function exportPresencePDF() {
+    if (!window.jspdf) { showToast('PDF library not ready, try again', 'error'); return; }
+
+    const { jsPDF } = window.jspdf;
+    const doc  = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+    const now  = new Date();
+    const pageW = doc.internal.pageSize.getWidth();
+    const pageH = doc.internal.pageSize.getHeight();
+
+    const dateLong = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+    const timeStr  = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+    // ── Header band ────────────────────────────────────────────────────────
+    doc.setFillColor(18, 18, 36);
+    doc.rect(0, 0, pageW, 44, 'F');
+
+    doc.setFillColor(124, 58, 237); // purple accent stripe
+    doc.rect(0, 0, 4.5, 44, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.setTextColor(226, 232, 240);
+    doc.text('ClipShare', 13, 18);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    doc.setTextColor(148, 163, 184);
+    doc.text('Presence Report', 13, 27);
+
+    doc.setFontSize(8.5);
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Generated: ${dateLong} at ${timeStr}`, pageW - 13, 27, { align: 'right' });
+
+    // ── Summary ────────────────────────────────────────────────────────────
+    const count = onlineUsers.length;
+    doc.setFontSize(13);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(30, 30, 60);
+    doc.text(`${count} user${count !== 1 ? 's' : ''} currently online`, 13, 57);
+
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text(`Snapshot taken at ${timeStr}`, 13, 64);
+
+    // ── Table ──────────────────────────────────────────────────────────────
+    const rows = onlineUsers.map((u, i) => [
+      String(i + 1),
+      u.username,
+      u.username === user.username ? 'You' : '',
+    ]);
+
+    doc.autoTable({
+      startY: 70,
+      head: [['#', 'Username', 'Note']],
+      body: rows,
+      theme: 'grid',
+      headStyles: {
+        fillColor:   [124, 58, 237],
+        textColor:   [255, 255, 255],
+        fontStyle:   'bold',
+        fontSize:    10,
+        cellPadding: { top: 5, right: 7, bottom: 5, left: 7 },
+      },
+      bodyStyles: {
+        fontSize:    10,
+        textColor:   [30, 30, 55],
+        cellPadding: { top: 4.5, right: 7, bottom: 4.5, left: 7 },
+      },
+      alternateRowStyles: { fillColor: [245, 243, 255] },
+      columnStyles: {
+        0: { cellWidth: 16,   halign: 'center', fontStyle: 'bold' },
+        1: { cellWidth: 'auto' },
+        2: { cellWidth: 26,   halign: 'center', textColor: [124, 58, 237], fontStyle: 'bold' },
+      },
+      margin: { left: 13, right: 13 },
+      tableLineColor: [220, 215, 240],
+      tableLineWidth: 0.25,
+      didDrawPage: () => {
+        const cur   = doc.internal.getCurrentPageInfo().pageNumber;
+        const total = doc.internal.getNumberOfPages();
+        doc.setDrawColor(220, 215, 240);
+        doc.setLineWidth(0.3);
+        doc.line(13, pageH - 14, pageW - 13, pageH - 14);
+        doc.setFontSize(8);
+        doc.setFont('helvetica', 'normal');
+        doc.setTextColor(148, 163, 184);
+        doc.text(`Page ${cur} of ${total}`, 13, pageH - 8);
+        doc.text('ClipShare · Presence Report', pageW - 13, pageH - 8, { align: 'right' });
+      },
+    });
+
+    doc.save(`clipshare-presence-${now.toISOString().slice(0, 10)}.pdf`);
+    showToast('Presence PDF downloaded!', 'success');
   }
 
   // ─── Logout ────────────────────────────────────────────────────────────────

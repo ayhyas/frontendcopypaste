@@ -38,7 +38,17 @@
           <span id="onlineCountNum">—</span>
         </button>
         <div class="online-users-panel" id="onlineUsersPanel" hidden>
-          <p class="online-users-header">Online now</p>
+          <div class="online-panel-head">
+            <span class="online-users-header">Online now</span>
+            <button class="online-export-btn" id="exportPresenceBtn" title="Export presence as PDF">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+              Export PDF
+            </button>
+          </div>
           <ul class="online-users-list" id="onlineUsersList"></ul>
         </div>
       </div>
@@ -324,6 +334,9 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-sql.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-go.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-rust.min.js"></script>
+  <!-- PDF generation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
   <script src="js/config.js"></script>
   <script src="js/api.js"></script>
   <script src="js/board.js"></script>
