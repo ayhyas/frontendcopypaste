@@ -36,10 +36,14 @@ const api = (() => {
       remove: (id)       => request(`/api/clips/${id}`, { method: 'DELETE' }),
     },
     workspaces: {
-      list:   ()          => request('/api/workspaces'),
-      create: (name)      => request('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }),
-      rename: (id, name)  => request(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
-      remove: (id)        => request(`/api/workspaces/${id}`, { method: 'DELETE' }),
+      list:       ()              => request('/api/workspaces'),
+      create:     (name)          => request('/api/workspaces', { method: 'POST', body: JSON.stringify({ name }) }),
+      rename:     (id, name)      => request(`/api/workspaces/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }),
+      remove:     (id)            => request(`/api/workspaces/${id}`, { method: 'DELETE' }),
+      lock:       (id, password)  => request(`/api/workspaces/${id}/lock`, { method: 'PATCH', body: JSON.stringify({ password }) }),
+      removeLock: (id)            => request(`/api/workspaces/${id}/lock`, { method: 'DELETE' }),
+      getLock:    (id)            => request(`/api/workspaces/${id}/lock`),
+      verify:     (id, password)  => request(`/api/workspaces/${id}/verify`, { method: 'POST', body: JSON.stringify({ password }) }),
     },
     drawings: {
       list:   ()                           => request('/api/drawings'),

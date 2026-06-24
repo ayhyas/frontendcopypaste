@@ -1250,6 +1250,31 @@ pre[class*="language-"] {
 .live-mic-btn--on { background: rgba(124,58,237,.25) !important; color: #a78bfa !important; }
 .live-mic-btn--on:hover { background: rgba(124,58,237,.4) !important; }
 
+/* ─── Workspace lock ─────────────────────────────────────────────────────────── */
+.ws-item-lock {
+  display: flex; align-items: center; flex-shrink: 0;
+  color: #f59e0b; margin-left: 2px;
+}
+.ws-lock-btn { color: var(--text-3) !important; }
+.ws-lock-btn--active { color: #f59e0b !important; }
+.ws-lock-btn--active:hover { background: rgba(245,158,11,.12) !important; color: #f59e0b !important; }
+
+/* Small modal variant */
+.modal--sm { max-width: 400px; }
+
+/* Danger button (small, for modal footer) */
+.btn-danger-sm {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 8px 14px;
+  background: rgba(239,68,68,.12);
+  border: 1px solid rgba(239,68,68,.3);
+  border-radius: var(--r-sm);
+  color: #f87171; font-size: .84rem; font-weight: 500; font-family: inherit;
+  cursor: pointer;
+  transition: background .15s, border-color .15s;
+}
+.btn-danger-sm:hover { background: rgba(239,68,68,.22); border-color: rgba(239,68,68,.5); }
+
 /* ─── Board layout ─────────────────────────────────────────────────────────── */
 .board-layout {
   display: flex;

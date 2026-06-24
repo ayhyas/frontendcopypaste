@@ -36,6 +36,9 @@
   let frameCtx              = null;
   let frameVideo            = null;
 
+  // Workspace lock state
+  const unlockedWorkspaces = new Set(); // workspace IDs unlocked this session
+
   // Audio streaming state
   let broadcasterMicStream  = null; // broadcaster's own mic MediaStream
   let broadcasterMicEnabled = false;
@@ -316,6 +319,7 @@
 
     socket.on('workspace:new', ({ data }) => {
       if (workspaces.some((w) => w._id === data._id)) return;
+      data.isLocked = !!data.lockPassword;
       workspaces.push(data);
       appendWorkspaceItem(data);
     });
@@ -333,6 +337,18 @@
       workspaces = workspaces.filter((w) => w._id !== id);
       document.querySelector(`.ws-item[data-id="${id}"]`)?.remove();
       if (currentWorkspaceId === id) selectWorkspace(null);
+    });
+
+    socket.on('workspace:lock-changed', ({ id, isLocked }) => {
+      const ws = workspaces.find((w) => w._id === id);
+      if (!ws) return;
+      ws.isLocked = isLocked;
+      if (!isLocked) {
+        ws.lockPassword = null;
+        unlockedWorkspaces.delete(id);
+      }
+      const existing = document.querySelector(`.ws-item[data-id="${id}"]`);
+      if (existing) existing.replaceWith(buildWorkspaceItem(ws));
     });
 
     // ─── Drawings ───────────────────────────────────────────────────────────
@@ -1209,6 +1225,11 @@
     li.className = 'ws-item';
     li.dataset.id = ws._id;
 
+    const lockIconSvg = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+      <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+    </svg>`;
+
     li.innerHTML = `
       <div class="ws-item-icon">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1216,6 +1237,7 @@
         </svg>
       </div>
       <span class="ws-item-name">${escapeHtml(ws.name)}</span>
+      ${ws.isLocked ? `<span class="ws-item-lock" title="Password protected">${lockIconSvg}</span>` : ''}
       ${ws.clipCount ? `<span class="ws-item-count">${ws.clipCount}</span>` : '<span class="ws-item-count" style="display:none">0</span>'}
       ${isOwn ? `
       <div class="ws-item-actions">
@@ -1225,6 +1247,10 @@
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
           </svg>
         </button>
+        ${isAdmin ? `
+        <button class="ws-action-btn ws-lock-btn ${ws.isLocked ? 'ws-lock-btn--active' : ''}" title="${ws.isLocked ? 'Manage lock' : 'Lock workspace'}">
+          ${lockIconSvg}
+        </button>` : ''}
         <button class="ws-action-btn ws-delete-btn" title="Delete">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
@@ -1236,12 +1262,21 @@
 
     li.addEventListener('click', (e) => {
       if (e.target.closest('.ws-action-btn')) return;
+      if (ws.isLocked && !isAdmin && !unlockedWorkspaces.has(ws._id)) {
+        openUnlockModal(ws);
+        return;
+      }
       selectWorkspace(ws._id);
     });
 
     li.querySelector('.ws-rename-btn')?.addEventListener('click', (e) => {
       e.stopPropagation();
       startRename(ws._id, li);
+    });
+
+    li.querySelector('.ws-lock-btn')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openLockModal(ws);
     });
 
     li.querySelector('.ws-delete-btn')?.addEventListener('click', (e) => {
@@ -1338,6 +1373,141 @@
     }
   }
 
+  // ─── Workspace lock modal (admin) ──────────────────────────────────────────
+  let lockModalWsId = null;
+
+  function openLockModal(ws) {
+    lockModalWsId = ws._id;
+    const isLocked = !!ws.isLocked;
+
+    document.getElementById('wsLockModalTitle').textContent = isLocked ? 'Manage workspace lock' : 'Lock workspace';
+    document.getElementById('wsLockDesc').textContent = isLocked
+      ? 'Change or remove the password for this workspace.'
+      : 'Set a password — students will need it to access this workspace.';
+    document.getElementById('wsLockPasswordLabel').textContent = isLocked ? 'Password (pre-filled — edit to change)' : 'Password';
+    document.getElementById('wsLockPasswordInput').value = ws.lockPassword || '';
+    document.getElementById('wsLockPasswordInput').type = 'password';
+    document.getElementById('wsLockRemoveBtn').style.display = isLocked ? '' : 'none';
+    document.getElementById('wsLockSaveBtn').querySelector('.btn-text').textContent = isLocked ? 'Update' : 'Lock';
+
+    document.getElementById('wsLockOverlay').classList.add('active');
+    setTimeout(() => document.getElementById('wsLockPasswordInput').focus(), 60);
+  }
+
+  function closeLockModal() {
+    document.getElementById('wsLockOverlay').classList.remove('active');
+    lockModalWsId = null;
+  }
+
+  function setupLockModal() {
+    document.getElementById('wsLockModalClose').addEventListener('click', closeLockModal);
+    document.getElementById('wsLockCancelBtn').addEventListener('click', closeLockModal);
+    document.getElementById('wsLockOverlay').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('wsLockOverlay')) closeLockModal();
+    });
+
+    document.getElementById('wsLockTogglePassword').addEventListener('click', () => {
+      const inp = document.getElementById('wsLockPasswordInput');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+
+    document.getElementById('wsLockRemoveBtn').addEventListener('click', async () => {
+      if (!lockModalWsId) return;
+      if (!confirm('Remove the lock? Anyone will be able to access this workspace.')) return;
+      try {
+        await api.workspaces.removeLock(lockModalWsId);
+        const ws = workspaces.find((w) => w._id === lockModalWsId);
+        if (ws) { ws.isLocked = false; ws.lockPassword = null; }
+        closeLockModal();
+        showToast('Lock removed', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to remove lock', 'error');
+      }
+    });
+
+    document.getElementById('wsLockSaveBtn').addEventListener('click', async () => {
+      if (!lockModalWsId) return;
+      const password = document.getElementById('wsLockPasswordInput').value.trim();
+      if (!password) { showToast('Enter a password', 'error'); return; }
+      const btn = document.getElementById('wsLockSaveBtn');
+      btn.disabled = true;
+      try {
+        const { data } = await api.workspaces.lock(lockModalWsId, password);
+        const ws = workspaces.find((w) => w._id === lockModalWsId);
+        if (ws) { ws.isLocked = true; ws.lockPassword = data.lockPassword; }
+        closeLockModal();
+        showToast('Workspace locked', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to lock workspace', 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('wsLockPasswordInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('wsLockSaveBtn').click();
+      if (e.key === 'Escape') closeLockModal();
+    });
+  }
+
+  // ─── Workspace unlock modal (non-admin) ────────────────────────────────────
+  let unlockModalWs = null;
+
+  function openUnlockModal(ws) {
+    unlockModalWs = ws;
+    document.getElementById('wsUnlockName').textContent = ws.name;
+    document.getElementById('wsUnlockInput').value = '';
+    document.getElementById('wsUnlockInput').type = 'password';
+    document.getElementById('wsUnlockError').textContent = '';
+    document.getElementById('wsUnlockOverlay').classList.add('active');
+    setTimeout(() => document.getElementById('wsUnlockInput').focus(), 60);
+  }
+
+  function closeUnlockModal() {
+    document.getElementById('wsUnlockOverlay').classList.remove('active');
+    unlockModalWs = null;
+  }
+
+  function setupUnlockModal() {
+    document.getElementById('wsUnlockClose').addEventListener('click', closeUnlockModal);
+    document.getElementById('wsUnlockCancelBtn').addEventListener('click', closeUnlockModal);
+    document.getElementById('wsUnlockOverlay').addEventListener('click', (e) => {
+      if (e.target === document.getElementById('wsUnlockOverlay')) closeUnlockModal();
+    });
+
+    document.getElementById('wsUnlockTogglePassword').addEventListener('click', () => {
+      const inp = document.getElementById('wsUnlockInput');
+      inp.type = inp.type === 'password' ? 'text' : 'password';
+    });
+
+    document.getElementById('wsUnlockSubmitBtn').addEventListener('click', async () => {
+      if (!unlockModalWs) return;
+      const password = document.getElementById('wsUnlockInput').value;
+      const errEl = document.getElementById('wsUnlockError');
+      const btn = document.getElementById('wsUnlockSubmitBtn');
+      errEl.textContent = '';
+      btn.disabled = true;
+      try {
+        await api.workspaces.verify(unlockModalWs._id, password);
+        unlockedWorkspaces.add(unlockModalWs._id);
+        const wsId = unlockModalWs._id;
+        closeUnlockModal();
+        selectWorkspace(wsId);
+      } catch (err) {
+        errEl.textContent = err.message || 'Incorrect password';
+        document.getElementById('wsUnlockInput').focus();
+        document.getElementById('wsUnlockInput').select();
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    document.getElementById('wsUnlockInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') document.getElementById('wsUnlockSubmitBtn').click();
+      if (e.key === 'Escape') closeUnlockModal();
+    });
+  }
+
   function setupWorkspaceSidebar() {
     document.getElementById('wsAllItem').addEventListener('click', () => selectWorkspace(null));
     document.getElementById('addWorkspaceBtn').addEventListener('click', () => {
@@ -1358,6 +1528,9 @@
         document.getElementById('wsNewInput').value = '';
       }
     });
+
+    setupLockModal();
+    setupUnlockModal();
   }
 
   async function createWorkspaceFromForm() {
