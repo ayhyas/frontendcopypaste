@@ -671,8 +671,10 @@
     text.textContent = online ? 'Live' : 'Reconnecting…';
   }
 
+  let _lockHandlerActive = false;
   function handleWorkspaceLocked() {
-    if (!currentWorkspaceId) return;
+    if (!currentWorkspaceId || _lockHandlerActive) return;
+    _lockHandlerActive = true;
     unlockedWorkspaces.delete(currentWorkspaceId);
     api.setWorkspaceToken(null);
     if (socket) socket.emit('ws:leave', { wsId: currentWorkspaceId });
@@ -689,6 +691,7 @@
       if (li) li.replaceWith(buildWorkspaceItem(ws));
       openUnlockModal(ws);
     }
+    _lockHandlerActive = false;
   }
 
   // ─── Load clips ────────────────────────────────────────────────────────────
