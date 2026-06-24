@@ -158,7 +158,8 @@
       const badge = document.createElement('span');
       badge.className = 'admin-badge';
       badge.textContent = 'Admin';
-      document.getElementById('navUser').insertBefore(badge, document.getElementById('logoutBtn'));
+      const logoutBtn = document.getElementById('logoutBtn');
+      logoutBtn.parentElement.insertBefore(badge, logoutBtn);
     }
 
     const fileInput = document.getElementById('profilePicInput');
@@ -1385,7 +1386,12 @@
 
     container.appendChild(el);
 
+    let dismissed = false;
+    let autoTimer;
     const dismiss = () => {
+      if (dismissed) return;
+      dismissed = true;
+      clearTimeout(autoTimer);
       el.classList.add('hand-alert--out');
       el.addEventListener('animationend', () => el.remove(), { once: true });
     };
@@ -1399,8 +1405,7 @@
       dismiss();
     });
 
-    // Auto-dismiss after 20 s if admin doesn't act
-    setTimeout(dismiss, 20000);
+    autoTimer = setTimeout(dismiss, 20000);
   }
 
   function setBroadcastingUI(active) {
