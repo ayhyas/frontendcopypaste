@@ -1431,12 +1431,15 @@
     const emptyText = document.getElementById('emptyStateText');
     if (emptyText) emptyText.textContent = 'No clips in this workspace yet.';
 
-    // Clear workspace-scoped state (presence, live banner)
-    onlineUsers = [];
-    renderOnlineUsers();
+    // Stop any in-progress broadcast or viewing session tied to the previous workspace
+    if (isBroadcasting) stopBroadcasting();
     if (activeBroadcasterId) { hideLiveBanner(); stopViewing(); }
     activeBroadcasterId   = null;
     activeBroadcasterName = null;
+
+    // Clear workspace-scoped presence
+    onlineUsers = [];
+    renderOnlineUsers();
 
     // Reload all content for new workspace
     currentPage = 1;
@@ -1691,6 +1694,10 @@
       btn.style.display = 'none';
     } else {
       btn.addEventListener('click', () => {
+        if (!currentWorkspaceId) {
+          showToast('Select a workspace first', 'error');
+          return;
+        }
         if (isBroadcasting) {
           stopBroadcasting();
         } else if (isAdmin) {
@@ -2268,7 +2275,9 @@
   function showLiveBanner(username) {
     const banner    = document.getElementById('liveBanner');
     const stopBtn   = document.getElementById('adminStopBtn');
-    document.getElementById('liveBannerText').textContent = `${username} is sharing their screen`;
+    const wsName    = workspaces.find(w => w._id === currentWorkspaceId)?.name;
+    const wsLabel   = wsName ? ` · ${wsName}` : '';
+    document.getElementById('liveBannerText').textContent = `${username} is sharing their screen${wsLabel}`;
     banner.style.display = 'flex';
     banner.classList.remove('live-banner--dismissed');
     if (stopBtn) stopBtn.style.display = isAdmin ? 'flex' : 'none';
