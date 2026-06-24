@@ -12,6 +12,7 @@
   let isModalOpen        = false;
   let workspaces         = [];
   let currentWorkspaceId = null; // null = All clips
+  let onlineUsers        = [];   // [{ username, profilePic }]
 
   // username → base64 profile pic; seeded with current user, updated via socket
   const profilePicCache  = user.profilePic ? { [user.username]: user.profilePic } : {};
@@ -116,6 +117,7 @@
   setupImageModal();
   setupWorkspaceSidebar();
   setupScreenShare();
+  setupOnlineUsersPanel();
   document.getElementById('logoutBtn').addEventListener('click', logout);
 
   // ─── Avatar helpers ────────────────────────────────────────────────────────
@@ -189,8 +191,10 @@
     socket.on('disconnect', () => setConnectionStatus(false));
     socket.on('connect_error', () => setConnectionStatus(false));
 
-    socket.on('users:count', ({ count }) => {
-      document.getElementById('onlineCountNum').textContent = count;
+    socket.on('users:online', ({ users }) => {
+      onlineUsers = users;
+      document.getElementById('onlineCountNum').textContent = users.length;
+      renderOnlineUsers();
     });
 
     socket.on('user:profilePic', ({ username, profilePic }) => {
@@ -1462,6 +1466,44 @@
     const overlay = document.getElementById('liveOverlay');
     overlay.classList.remove('live-overlay--visible');
     overlay.addEventListener('transitionend', () => { overlay.style.display = 'none'; }, { once: true });
+  }
+
+  // ─── Online users panel ────────────────────────────────────────────────────
+  function setupOnlineUsersPanel() {
+    const btn   = document.getElementById('onlineCount');
+    const panel = document.getElementById('onlineUsersPanel');
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = panel.hidden;
+      panel.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!panel.hidden && !document.getElementById('onlineCountWrap').contains(e.target)) {
+        panel.hidden = true;
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  function renderOnlineUsers() {
+    const list = document.getElementById('onlineUsersList');
+    if (!list) return;
+    list.innerHTML = onlineUsers.map(({ username, profilePic }) => {
+      const isYou = username === user.username;
+      const avatarStyle = profilePic
+        ? `background:none;background-image:url(${profilePic});background-size:cover;background-position:center`
+        : `background:${getAvatarColor(username)}`;
+      const avatarContent = profilePic ? '' : username[0].toUpperCase();
+      return `
+        <li class="online-user-item">
+          <div class="avatar avatar-xs" style="${avatarStyle}">${avatarContent}</div>
+          <span class="user-name">${escapeHtml(username)}</span>
+          ${isYou ? '<span class="you-badge">you</span>' : ''}
+        </li>`;
+    }).join('');
   }
 
   // ─── Logout ────────────────────────────────────────────────────────────────
