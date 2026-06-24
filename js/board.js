@@ -17,6 +17,8 @@
   // username → base64 profile pic; seeded with current user, updated via socket
   const profilePicCache  = user.profilePic ? { [user.username]: user.profilePic } : {};
   const isAdmin          = user.role === 'admin';
+  let   handRaiseQueue   = [];   // admin only: pending screen-share requests
+  let   isHandRaised     = false; // non-admin: waiting for approval
 
   // Screen share state
   let isBroadcasting        = false;
@@ -220,6 +222,33 @@
       setTimeout(logout, 2500);
     });
 
+    // ── Screen share permission flow ───────────────────────────────────────
+    // Non-admin: admin approved our request → start sharing
+    socket.on('screen:approved', () => {
+      isHandRaised = false;
+      setWaitingUI(false);
+      showToast('Screen share approved!', 'success');
+      startBroadcasting();
+    });
+
+    // Non-admin: admin denied our request
+    socket.on('screen:denied', () => {
+      isHandRaised = false;
+      setWaitingUI(false);
+      showToast('Screen share request was denied', 'error');
+    });
+
+    // Non-admin: no admin is online when we raised our hand
+    socket.on('screen:no-admin', () => {
+      showToast('No admin is online — request is pending', 'info');
+    });
+
+    // Admin: receive updated queue of pending requests
+    socket.on('screen:hand-queue', ({ queue }) => {
+      handRaiseQueue = queue;
+      renderHandRaiseQueue();
+    });
+
     socket.on('clip:new', ({ data }) => {
       if (clips.some((c) => c._id === data._id)) return;
 
@@ -293,7 +322,7 @@
     });
 
     socket.on('screen:ended', () => {
-      activeBroadcasterId  = null;
+      activeBroadcasterId   = null;
       activeBroadcasterName = null;
       hideLiveBanner();
       stopViewing();
@@ -529,11 +558,11 @@
         <time class="clip-time" datetime="${clip.createdAt}" title="${new Date(clip.createdAt).toLocaleString()}">${timeAgo(clip.createdAt)}</time>
       </div>
 
-      <div class="clip-title-row ${clip.title ? 'has-title' : ''} ${isOwn ? 'is-own' : ''}">
+      <div class="clip-title-row ${clip.title ? 'has-title' : ''} ${(isOwn || isAdmin) ? 'is-own' : ''}">
         ${clip.title
           ? `<span class="clip-title-text">${escapeHtml(clip.title)}</span>`
           : `<span class="clip-title-placeholder">Add a title…</span>`}
-        ${isOwn ? `
+        ${(isOwn || isAdmin) ? `
         <button class="clip-title-edit-btn" title="Edit title">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -584,7 +613,7 @@
     if (clip.type === 'image') {
       div.querySelector('.clip-image')?.addEventListener('click', () => openImageModal(clip.content));
     }
-    if (isOwn) {
+    if (isOwn || isAdmin) {
       div.querySelector('.clip-title-edit-btn')?.addEventListener('click', (e) => {
         e.stopPropagation();
         startTitleEdit(clip, div.querySelector('.clip-title-row'));
@@ -1209,10 +1238,20 @@
       btn.style.display = 'none';
     } else {
       btn.addEventListener('click', () => {
-        if (isBroadcasting) stopBroadcasting();
-        else startBroadcasting();
+        if (isBroadcasting) {
+          stopBroadcasting();
+        } else if (isAdmin) {
+          startBroadcasting(); // admin shares directly, no permission needed
+        } else if (isHandRaised) {
+          lowerHand(); // cancel pending request
+        } else {
+          raiseHand(); // request permission
+        }
       });
     }
+
+    // Show the hand-raise panel for admin
+    if (isAdmin) setupHandRaisePanel();
 
     // Watch/dismiss always available (viewing uses same WebRTC path)
     document.getElementById('watchLiveBtn').addEventListener('click', () => {
@@ -1321,7 +1360,99 @@
     const btn   = document.getElementById('shareScreenBtn');
     const label = document.getElementById('shareScreenLabel');
     btn.classList.toggle('btn-share-screen--live', active);
+    btn.classList.remove('btn-share-screen--waiting');
     label.textContent = active ? 'Stop sharing' : 'Share screen';
+  }
+
+  function setWaitingUI(active) {
+    const btn   = document.getElementById('shareScreenBtn');
+    const label = document.getElementById('shareScreenLabel');
+    btn.classList.toggle('btn-share-screen--waiting', active);
+    btn.classList.remove('btn-share-screen--live');
+    label.textContent = active ? '✋ Waiting… (cancel)' : 'Share screen';
+  }
+
+  function raiseHand() {
+    isHandRaised = true;
+    setWaitingUI(true);
+    socket.emit('screen:raise-hand');
+  }
+
+  function lowerHand() {
+    isHandRaised = false;
+    setWaitingUI(false);
+    socket.emit('screen:lower-hand');
+  }
+
+  function setupHandRaisePanel() {
+    const wrap  = document.getElementById('handQueueWrap');
+    const btn   = document.getElementById('handQueueBtn');
+    const panel = document.getElementById('handQueuePanel');
+    if (!wrap) return;
+    wrap.style.display = 'flex';
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = panel.hidden;
+      panel.hidden = !open;
+      btn.setAttribute('aria-expanded', String(open));
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!panel.hidden && !wrap.contains(e.target)) {
+        panel.hidden = true;
+        btn.setAttribute('aria-expanded', 'false');
+      }
+    });
+  }
+
+  function renderHandRaiseQueue() {
+    const list    = document.getElementById('handQueueList');
+    const empty   = document.getElementById('handQueueEmpty');
+    const badge   = document.getElementById('handQueueBadge');
+    if (!list) return;
+
+    const count = handRaiseQueue.length;
+
+    // Update badge
+    badge.textContent    = count;
+    badge.style.display  = count > 0 ? 'inline-flex' : 'none';
+    empty.style.display  = count === 0 ? 'block' : 'none';
+
+    list.innerHTML = handRaiseQueue.map(({ userId, username, profilePic }) => {
+      const avatarStyle   = profilePic
+        ? `background:none;background-image:url(${profilePic});background-size:cover;background-position:center`
+        : `background:${getAvatarColor(username)}`;
+      const avatarContent = profilePic ? '' : username[0].toUpperCase();
+      return `
+        <li class="hand-req-item" data-user-id="${escapeHtml(userId)}">
+          <div class="avatar avatar-xs" style="${avatarStyle}">${avatarContent}</div>
+          <span class="hand-req-name">${escapeHtml(username)}</span>
+          <button class="hand-approve-btn" title="Approve" data-approve="${escapeHtml(userId)}">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+          </button>
+          <button class="hand-deny-btn" title="Deny" data-deny="${escapeHtml(userId)}">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </li>`;
+    }).join('');
+
+    list.querySelectorAll('.hand-approve-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        socket.emit('screen:approve', { userId: btn.dataset.approve });
+      });
+    });
+    list.querySelectorAll('.hand-deny-btn').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        socket.emit('screen:deny', { userId: btn.dataset.deny });
+      });
+    });
   }
 
   function updateViewerCount() {
