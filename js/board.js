@@ -1680,6 +1680,9 @@
     const btn   = document.getElementById('onlineCount');
     const panel = document.getElementById('onlineUsersPanel');
 
+    const exportBtn = document.getElementById('exportPresenceBtn');
+    if (exportBtn && !isAdmin) exportBtn.style.display = 'none';
+
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
       const open = panel.hidden;
