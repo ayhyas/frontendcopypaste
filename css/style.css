@@ -994,6 +994,51 @@ pre[class*="language-"] {
 .hand-deny-btn:hover { background: rgba(239,68,68,.25); }
 .hand-panel-empty { padding: 16px 14px; font-size: .82rem; color: var(--text-3); text-align: center; margin: 0; }
 
+/* ─── Hand-raise alert (admin notification) ──────────────────── */
+@keyframes hand-alert-in {
+  from { opacity: 0; transform: translateX(120%); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes hand-alert-out {
+  from { opacity: 1; transform: translateX(0); max-height: 120px; margin-bottom: 10px; }
+  to   { opacity: 0; transform: translateX(120%); max-height: 0;   margin-bottom: 0; }
+}
+#handAlertContainer {
+  position: fixed; bottom: 24px; right: 24px;
+  display: flex; flex-direction: column; gap: 10px;
+  z-index: 9999; pointer-events: none;
+}
+.hand-alert {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  background: #1a1a2e;
+  border: 1px solid rgba(124,58,237,.4);
+  border-left: 3px solid #7c3aed;
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0,0,0,.55);
+  width: 300px; pointer-events: all;
+  animation: hand-alert-in .3s cubic-bezier(.34,1.56,.64,1) forwards;
+}
+.hand-alert.hand-alert--out {
+  animation: hand-alert-out .3s ease forwards;
+}
+.hand-alert-body { flex: 1; min-width: 0; }
+.hand-alert-title {
+  font-size: .8rem; font-weight: 700; color: var(--text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+.hand-alert-sub { font-size: .75rem; color: var(--text-3); }
+.hand-alert-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.hand-alert-approve, .hand-alert-deny {
+  padding: 5px 11px; border-radius: 6px; border: none;
+  font-size: .75rem; font-weight: 700; cursor: pointer;
+  transition: opacity .15s;
+}
+.hand-alert-approve:hover, .hand-alert-deny:hover { opacity: .8; }
+.hand-alert-approve { background: #22c55e; color: #fff; }
+.hand-alert-deny    { background: rgba(239,68,68,.18); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+
 /* Live dot (pulsing red) */
 @keyframes pulse-dot {
   0%, 100% { opacity: 1;  transform: scale(1); }

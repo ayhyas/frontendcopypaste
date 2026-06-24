@@ -243,6 +243,11 @@
       showToast('No admin is online — request is pending', 'info');
     });
 
+    // Admin: a user raised their hand — show a prominent notification
+    socket.on('screen:hand-raised', ({ userId, username, profilePic }) => {
+      if (isAdmin) showHandRaiseAlert(userId, username, profilePic);
+    });
+
     // Admin: receive updated queue of pending requests
     socket.on('screen:hand-queue', ({ queue }) => {
       handRaiseQueue = queue;
@@ -1354,6 +1359,48 @@
     if (frameVideo) { frameVideo.pause(); frameVideo.srcObject = null; frameVideo = null; }
     frameCanvas = null;
     frameCtx    = null;
+  }
+
+  function showHandRaiseAlert(userId, username, profilePic) {
+    const container = document.getElementById('handAlertContainer');
+    if (!container) return;
+
+    const avatarStyle   = profilePic
+      ? `background:none;background-image:url(${profilePic});background-size:cover;background-position:center`
+      : `background:${getAvatarColor(username)}`;
+    const avatarContent = profilePic ? '' : username[0].toUpperCase();
+
+    const el = document.createElement('div');
+    el.className = 'hand-alert';
+    el.innerHTML = `
+      <div class="avatar avatar-xs" style="${avatarStyle}">${avatarContent}</div>
+      <div class="hand-alert-body">
+        <div class="hand-alert-title">${escapeHtml(username)}</div>
+        <div class="hand-alert-sub">wants to share their screen</div>
+      </div>
+      <div class="hand-alert-actions">
+        <button class="hand-alert-approve">Allow</button>
+        <button class="hand-alert-deny">Deny</button>
+      </div>`;
+
+    container.appendChild(el);
+
+    const dismiss = () => {
+      el.classList.add('hand-alert--out');
+      el.addEventListener('animationend', () => el.remove(), { once: true });
+    };
+
+    el.querySelector('.hand-alert-approve').addEventListener('click', () => {
+      socket.emit('screen:approve', { userId });
+      dismiss();
+    });
+    el.querySelector('.hand-alert-deny').addEventListener('click', () => {
+      socket.emit('screen:deny', { userId });
+      dismiss();
+    });
+
+    // Auto-dismiss after 20 s if admin doesn't act
+    setTimeout(dismiss, 20000);
   }
 
   function setBroadcastingUI(active) {
