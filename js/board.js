@@ -225,6 +225,12 @@
     socket.on('connect_error', () => setConnectionStatus(false));
 
     socket.on('users:online', ({ users }) => {
+      // Keep global count for connection indicator; panel is workspace-scoped via ws:users-online
+      document.getElementById('onlineCountNum').textContent = users.length;
+    });
+
+    socket.on('ws:users-online', ({ wsId, users }) => {
+      if (wsId !== currentWorkspaceId) return;
       onlineUsers = users;
       document.getElementById('onlineCountNum').textContent = users.length;
       renderOnlineUsers();
@@ -413,8 +419,10 @@
     socket.on('resource:deleted', ({ id }) => removeResourceFromUI(id));
 
     // ─── Screen share signaling ─────────────────────────────────────────────
-    socket.on('screen:available', ({ socketId, username }) => {
-      activeBroadcasterId  = socketId;
+    socket.on('screen:available', ({ socketId, username, wsId }) => {
+      // Ignore streams from workspaces we're not in
+      if (wsId && wsId !== currentWorkspaceId) return;
+      activeBroadcasterId   = socketId;
       activeBroadcasterName = username;
       if (!isBroadcasting) showLiveBanner(username);
     });
@@ -1423,6 +1431,13 @@
     const emptyText = document.getElementById('emptyStateText');
     if (emptyText) emptyText.textContent = 'No clips in this workspace yet.';
 
+    // Clear workspace-scoped state (presence, live banner)
+    onlineUsers = [];
+    renderOnlineUsers();
+    if (activeBroadcasterId) { hideLiveBanner(); stopViewing(); }
+    activeBroadcasterId   = null;
+    activeBroadcasterName = null;
+
     // Reload all content for new workspace
     currentPage = 1;
     clips = [];
@@ -1761,7 +1776,7 @@
       // Triggers when the user clicks the browser's native "Stop sharing" button
       stream.getVideoTracks()[0].addEventListener('ended', stopBroadcasting);
 
-      socket.emit('screen:start', { username: user.username });
+      socket.emit('screen:start', { username: user.username, wsId: currentWorkspaceId });
       setBroadcastingUI(true);
       showBroadcasterPanel(true);
     } catch (err) {
