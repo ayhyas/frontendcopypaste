@@ -36,6 +36,12 @@
     iceCandidatePoolSize: 4, // pre-gather candidates before signaling starts
   };
 
+  const QUALITY_PRESETS = {
+    high:   { maxBitrate: 4_000_000, scaleResolutionDownBy: 1,   label: 'HD (4 Mbps)' },
+    medium: { maxBitrate: 1_500_000, scaleResolutionDownBy: 1.5, label: 'SD (1.5 Mbps)' },
+    low:    { maxBitrate: 500_000,   scaleResolutionDownBy: 2.5, label: 'Low (500 Kbps)' },
+  };
+
   // ─── WebRTC compat helpers ──────────────────────────────────────────────────
   function createPeerConnection() {
     const PC = window.RTCPeerConnection
@@ -231,7 +237,8 @@
         if (track.kind === 'video') {
           const params = sender.getParameters();
           if (!params.encodings || !params.encodings.length) params.encodings = [{}];
-          params.encodings[0].maxBitrate = 2_500_000; // 2.5 Mbps — prevents buffer-bloat stutter
+          params.encodings[0].maxBitrate            = QUALITY_PRESETS.high.maxBitrate;
+          params.encodings[0].scaleResolutionDownBy = QUALITY_PRESETS.high.scaleResolutionDownBy;
           sender.setParameters(params).catch(() => {});
         }
       });
@@ -303,6 +310,22 @@
       if (!isFallbackViewing) return;
       document.getElementById('liveFallbackImg').src = frame;
       document.getElementById('liveConnecting').style.display = 'none';
+    });
+
+    // Broadcaster: viewer requests a quality change
+    socket.on('screen:quality-request', ({ viewerId, preset: presetKey }) => {
+      if (!isBroadcasting) return;
+      const pc     = peerConnections[viewerId];
+      const preset = QUALITY_PRESETS[presetKey];
+      if (!pc || !preset) return;
+      pc.getSenders().forEach((sender) => {
+        if (sender.track?.kind !== 'video') return;
+        const params = sender.getParameters();
+        if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+        params.encodings[0].maxBitrate            = preset.maxBitrate;
+        params.encodings[0].scaleResolutionDownBy = preset.scaleResolutionDownBy;
+        sender.setParameters(params).catch(() => {});
+      });
     });
   }
 
@@ -1110,6 +1133,11 @@
     });
     document.getElementById('liveBannerDismiss').addEventListener('click', hideLiveBanner);
     document.getElementById('liveCloseBtn').addEventListener('click', stopViewing);
+
+    document.getElementById('liveQualitySelect').addEventListener('change', (e) => {
+      if (!activeBroadcasterId || (!viewerPc && !isFallbackViewing)) return;
+      socket.emit('screen:quality-request', { broadcasterId: activeBroadcasterId, preset: e.target.value });
+    });
     document.getElementById('liveFullscreenBtn').addEventListener('click', () => {
       requestFullscreenCompat(document.getElementById('liveVideo'));
     });
@@ -1312,6 +1340,9 @@
     }
 
     closeLiveOverlay();
+
+    // Broadcast is still live — restore the watch banner so the user can rejoin
+    if (activeBroadcasterId) showLiveBanner(activeBroadcasterName);
   }
 
   function toggleMute() {
@@ -1345,6 +1376,9 @@
     // Reset to video mode (fallback will switch to img if needed)
     document.getElementById('liveVideo').style.display = '';
     document.getElementById('liveFallbackImg').style.display = 'none';
+
+    // Reset quality selector to highest for each new viewing session
+    document.getElementById('liveQualitySelect').value = 'high';
 
     // Always start muted (avoids autoplay-with-audio block on Safari/Firefox)
     const vid = document.getElementById('liveVideo');

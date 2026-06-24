@@ -929,6 +929,23 @@ pre[class*="language-"] {
 .live-overlay-bar-right { display: flex; align-items: center; gap: 8px; }
 .live-overlay-label { font-size: .9rem; font-weight: 500; color: var(--text-2); }
 
+.live-quality-select {
+  height: 30px; padding: 0 24px 0 8px;
+  background: rgba(255,255,255,.08);
+  color: var(--text-2);
+  border: 1px solid rgba(255,255,255,.12);
+  border-radius: 7px;
+  font-size: .78rem; font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+  appearance: none; -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 7px center;
+}
+.live-quality-select:hover { background-color: rgba(255,255,255,.14); border-color: rgba(255,255,255,.2); }
+.live-quality-select option { background: #1a1a2e; color: #e2e8f0; }
+
 .live-ctrl-btn {
   display: flex; align-items: center; justify-content: center;
   width: 34px; height: 34px;
