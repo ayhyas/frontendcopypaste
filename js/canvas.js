@@ -576,7 +576,14 @@
     // Fill
     if (el.fill !== undefined) {
       activeStyle.fill = el.fill;
-      document.querySelectorAll('[data-fill]').forEach(b => b.classList.toggle('fill-active', b.dataset.fill === el.fill));
+      const isSolid = el.fill !== 'none';
+      document.querySelectorAll('[data-fill]').forEach(b => {
+        b.classList.toggle('fill-active', isSolid ? b.dataset.fill === 'solid' : b.dataset.fill === 'none');
+      });
+      if (isSolid) {
+        const fi = document.getElementById('fillColorInput');
+        if (fi) fi.value = el.fill;
+      }
     }
     // Stroke width
     if (el.width !== undefined) {
@@ -631,11 +638,22 @@
 
     document.querySelectorAll('[data-fill]').forEach(btn => {
       btn.addEventListener('click', () => {
-        activeStyle.fill = btn.dataset.fill;
+        const val = btn.dataset.fill;
+        activeStyle.fill = val === 'solid'
+          ? (document.getElementById('fillColorInput')?.value || '#7c3aed')
+          : val;
         document.querySelectorAll('[data-fill]').forEach(b => b.classList.remove('fill-active'));
         btn.classList.add('fill-active');
         applyToSelected({ fill: activeStyle.fill });
       });
+    });
+
+    document.getElementById('fillColorInput')?.addEventListener('input', (e) => {
+      // Only apply when solid fill is active (fill !== 'none')
+      if (activeStyle.fill !== 'none') {
+        activeStyle.fill = e.target.value;
+        applyToSelected({ fill: activeStyle.fill });
+      }
     });
 
     document.querySelectorAll('[data-sw]').forEach(btn => {
