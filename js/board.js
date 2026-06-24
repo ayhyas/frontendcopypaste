@@ -16,6 +16,7 @@
 
   // username → base64 profile pic; seeded with current user, updated via socket
   const profilePicCache  = user.profilePic ? { [user.username]: user.profilePic } : {};
+  const isAdmin          = user.role === 'admin';
 
   // Screen share state
   let isBroadcasting        = false;
@@ -151,6 +152,12 @@
   function initNavbar() {
     applyAvatarPic(document.getElementById('navAvatar'), user.username, user.profilePic || null);
     document.getElementById('navUsername').textContent = user.username;
+    if (isAdmin) {
+      const badge = document.createElement('span');
+      badge.className = 'admin-badge';
+      badge.textContent = 'Admin';
+      document.getElementById('navUser').insertBefore(badge, document.getElementById('logoutBtn'));
+    }
 
     const fileInput = document.getElementById('profilePicInput');
     document.getElementById('navAvatarWrap').addEventListener('click', () => fileInput.click());
@@ -200,6 +207,17 @@
     socket.on('user:profilePic', ({ username, profilePic }) => {
       profilePicCache[username] = profilePic;
       updateAllAvatarsForUser(username, profilePic);
+    });
+
+    // Admin stopped our broadcast remotely
+    socket.on('screen:force-stop', () => {
+      if (isBroadcasting) stopBroadcasting();
+    });
+
+    // We were kicked by admin
+    socket.on('kicked', () => {
+      showToast('You have been removed by an admin', 'error');
+      setTimeout(logout, 2500);
     });
 
     socket.on('clip:new', ({ data }) => {
@@ -545,7 +563,7 @@
                    <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
                  </svg>`}
           </button>
-          ${isOwn ? `
+          ${(isOwn || isAdmin) ? `
           <button class="action-btn delete-btn" data-id="${clip._id}" title="Delete clip">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
@@ -1002,7 +1020,7 @@
   }
 
   function buildWorkspaceItem(ws) {
-    const isOwn = ws.ownerName === user.username;
+    const isOwn = ws.ownerName === user.username || isAdmin;
     const li = document.createElement('li');
     li.className = 'ws-item';
     li.dataset.id = ws._id;
@@ -1203,6 +1221,10 @@
     });
     document.getElementById('liveBannerDismiss').addEventListener('click', hideLiveBanner);
     document.getElementById('liveCloseBtn').addEventListener('click', stopViewing);
+
+    document.getElementById('adminStopBtn')?.addEventListener('click', () => {
+      socket.emit('screen:admin-stop');
+    });
 
     document.getElementById('liveQualitySelect').addEventListener('change', (e) => {
       if (!activeBroadcasterId || (!viewerPc && !isFallbackViewing)) return;
@@ -1427,10 +1449,12 @@
   }
 
   function showLiveBanner(username) {
-    const banner = document.getElementById('liveBanner');
+    const banner    = document.getElementById('liveBanner');
+    const stopBtn   = document.getElementById('adminStopBtn');
     document.getElementById('liveBannerText').textContent = `${username} is sharing their screen`;
     banner.style.display = 'flex';
     banner.classList.remove('live-banner--dismissed');
+    if (stopBtn) stopBtn.style.display = isAdmin ? 'flex' : 'none';
   }
 
   function hideLiveBanner() {
@@ -1496,19 +1520,36 @@
   function renderOnlineUsers() {
     const list = document.getElementById('onlineUsersList');
     if (!list) return;
-    list.innerHTML = onlineUsers.map(({ username, profilePic }) => {
-      const isYou = username === user.username;
-      const avatarStyle = profilePic
+    list.innerHTML = onlineUsers.map(({ userId, username, profilePic, role }) => {
+      const isYou        = username === user.username;
+      const isUserAdmin  = role === 'admin';
+      const avatarStyle  = profilePic
         ? `background:none;background-image:url(${profilePic});background-size:cover;background-position:center`
         : `background:${getAvatarColor(username)}`;
       const avatarContent = profilePic ? '' : username[0].toUpperCase();
       return `
-        <li class="online-user-item">
+        <li class="online-user-item" data-user-id="${escapeHtml(userId || '')}">
           <div class="avatar avatar-xs" style="${avatarStyle}">${avatarContent}</div>
+          ${isUserAdmin ? `<svg class="admin-crown" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M2 20h20v2H2v-2zm2-8l5 3 3-6 3 6 5-3-1.5 7H5.5L4 12z"/></svg>` : ''}
           <span class="user-name">${escapeHtml(username)}</span>
           ${isYou ? '<span class="you-badge">you</span>' : ''}
+          ${(isAdmin && !isYou) ? `<button class="kick-btn" title="Remove user" data-kick-id="${escapeHtml(userId || '')}">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>` : ''}
         </li>`;
     }).join('');
+
+    if (isAdmin) {
+      list.querySelectorAll('.kick-btn').forEach((btn) => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const targetId = btn.dataset.kickId;
+          if (targetId) socket.emit('user:kick', { userId: targetId });
+        });
+      });
+    }
   }
 
   function exportPresencePDF() {

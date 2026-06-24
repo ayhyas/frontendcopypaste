@@ -984,6 +984,37 @@ pre[class*="language-"] {
 }
 .btn-watch-live:hover  { background: #dc2626; }
 .btn-watch-live:active { transform: scale(.96); }
+.btn-admin-stop {
+  display: flex; align-items: center; gap: 5px;
+  padding: 7px 12px;
+  background: rgba(239,68,68,.15); color: #f87171;
+  border: 1px solid rgba(239,68,68,.35);
+  font-size: .78rem; font-weight: 700; border-radius: 6px;
+  transition: background var(--transition), border-color var(--transition);
+}
+.btn-admin-stop:hover { background: rgba(239,68,68,.28); border-color: rgba(239,68,68,.6); }
+
+/* Admin badge in navbar */
+.admin-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: .65rem; font-weight: 700; letter-spacing: .04em;
+  text-transform: uppercase; color: #a78bfa;
+  background: rgba(124,58,237,.18); border: 1px solid rgba(124,58,237,.35);
+  border-radius: 5px; padding: 2px 6px; flex-shrink: 0;
+}
+
+/* Online panel — crown icon for admin, kick button */
+.admin-crown { color: #f59e0b; flex-shrink: 0; }
+.kick-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; flex-shrink: 0;
+  background: transparent; color: var(--text-3);
+  border: 1px solid transparent; border-radius: 5px;
+  opacity: 0;
+  transition: opacity var(--transition), background var(--transition), color var(--transition);
+}
+.online-user-item:hover .kick-btn { opacity: 1; }
+.kick-btn:hover { background: rgba(239,68,68,.15); color: #f87171; border-color: rgba(239,68,68,.3); }
 .live-banner-dismiss {
   display: flex; align-items: center; justify-content: center;
   width: 28px; height: 28px;
