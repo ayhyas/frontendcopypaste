@@ -1574,9 +1574,10 @@ pre[class*="language-"] {
   color: inherit;
   outline: none;
   resize: none;
-  z-index: 10;
+  z-index: 20;
   overflow: hidden;
-  white-space: pre;
+  word-break: keep-all;
+  white-space: nowrap;
   box-sizing: content-box;
 }
 

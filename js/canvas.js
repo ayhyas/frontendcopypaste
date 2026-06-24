@@ -311,10 +311,11 @@
     canvas.addEventListener('mousemove',   onMove);
     canvas.addEventListener('mouseup',     onUp);
     canvas.addEventListener('mouseleave',  onUp);
+    canvas.addEventListener('click',       onCanvasClick);
     canvas.addEventListener('wheel',       onWheel, { passive: false });
     canvas.addEventListener('touchstart',  e => { e.preventDefault(); onDown(e); }, { passive: false });
     canvas.addEventListener('touchmove',   e => { e.preventDefault(); onMove(e); }, { passive: false });
-    canvas.addEventListener('touchend',    e => { e.preventDefault(); onUp(e);   }, { passive: false });
+    canvas.addEventListener('touchend',    e => { e.preventDefault(); onCanvasClick(e); }, { passive: false });
     document.addEventListener('keydown',   onKey);
     document.addEventListener('keyup',     e => {
       if (e.key === ' ') { spaceDown = false; syncCursor(); }
@@ -346,8 +347,16 @@
     }
   }
 
+  function onCanvasClick(e) {
+    if (activeTool !== 'text' || spaceDown || e.button === 2) return;
+    const { mx, my } = clientPos(e);
+    const { x: dx, y: dy } = toDoc(mx, my);
+    placeText(mx, my, dx, dy);
+  }
+
   function onDown(e) {
     if (e.button === 2) return; // ignore right-click
+    if (activeTool === 'text') return; // text placement handled by click event
     isDown = true;
     const { mx, my } = clientPos(e);
 
@@ -373,11 +382,6 @@
 
     if (activeTool === 'eraser') {
       eraseAt(dx, dy);
-      return;
-    }
-
-    if (activeTool === 'text') {
-      placeText(mx, my, dx, dy);
       return;
     }
 
@@ -491,24 +495,27 @@
 
   /* ─── Text tool ───────────────────────────────────────────────────────────── */
   function placeText(mx, my, dx, dy) {
-    finishText();
-    const fs       = activeStyle.fontSize * vp.s;
-    const lineH    = fs * 1.4;
-    // Position textarea so its text baseline aligns with the canvas draw point.
-    // Canvas draws baseline at `my`; textarea top is ~0.8 * fs above baseline.
-    const top = my - fs * 0.82;
+    // Commit any in-progress text before starting a new one
+    if (textArea.style.display === 'block') {
+      if (textArea.value.trim()) commitText();
+      else finishText();
+    }
+
+    const fs   = activeStyle.fontSize * vp.s;
+    const lineH = fs * 1.35;
 
     textArea.style.display    = 'block';
     textArea.style.left       = mx + 'px';
-    textArea.style.top        = top + 'px';
+    textArea.style.top        = (my - fs * 0.82) + 'px';
     textArea.style.fontSize   = fs + 'px';
     textArea.style.lineHeight = lineH + 'px';
     textArea.style.color      = activeStyle.stroke;
-    textArea.style.minWidth   = '2px';
     textArea.style.width      = '180px';
     textArea.style.height     = lineH + 'px';
     textArea.dataset.dx       = dx;
     textArea.dataset.dy       = dy;
+    textArea.dataset.fontSize = activeStyle.fontSize;
+    textArea.dataset.stroke   = activeStyle.stroke;
     textArea.value            = '';
 
     function grow() {
@@ -517,10 +524,9 @@
       textArea.style.width  = Math.max(180, textArea.scrollWidth + 20) + 'px';
     }
 
-    textArea.focus();
     textArea.oninput = () => {
       grow();
-      drawing = mkTextPreview(dx, dy, textArea.value);
+      drawing = mkTextPreview(dx, dy);
       render();
     };
     textArea.onblur = () => {
@@ -529,25 +535,35 @@
       render();
     };
     textArea.onkeydown = e => {
-      if (e.key === 'Escape') { e.preventDefault(); finishText(); render(); }
-      // Ctrl+Enter or Shift+Enter = commit; plain Enter = newline (default)
-      if (e.key === 'Enter' && (e.ctrlKey || e.shiftKey)) {
+      if (e.key === 'Escape') { e.preventDefault(); finishText(); render(); return; }
+      // Plain Enter = commit; Shift+Enter = newline
+      if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         if (textArea.value.trim()) commitText();
         else finishText();
         render();
       }
     };
+
+    requestAnimationFrame(() => textArea.focus());
   }
 
-  function mkTextPreview(dx, dy, text) {
-    return { id: '__txt__', type: 'text', x: dx, y: dy, text, stroke: activeStyle.stroke, fontSize: activeStyle.fontSize, fill: 'none', width: 1, dash: false, opacity: 0.6 };
+  function mkTextPreview(dx, dy) {
+    const fs = parseFloat(textArea.dataset.fontSize) || activeStyle.fontSize;
+    return { id: '__txt__', type: 'text', x: dx, y: dy, text: textArea.value,
+             stroke: textArea.dataset.stroke || activeStyle.stroke,
+             fontSize: fs, fill: 'none', width: 1, dash: false, opacity: 0.6 };
   }
 
   function commitText() {
     const dx = parseFloat(textArea.dataset.dx);
     const dy = parseFloat(textArea.dataset.dy);
-    elements.push({ id: genId(), type: 'text', x: dx, y: dy, text: textArea.value.trim(), stroke: activeStyle.stroke, fontSize: activeStyle.fontSize, fill: 'none', width: 1, dash: false, opacity: 1 });
+    const fs = parseFloat(textArea.dataset.fontSize) || activeStyle.fontSize;
+    if (isNaN(dx) || isNaN(dy)) { finishText(); return; }
+    elements.push({ id: genId(), type: 'text', x: dx, y: dy,
+                    text: textArea.value.trim(),
+                    stroke: textArea.dataset.stroke || activeStyle.stroke,
+                    fontSize: fs, fill: 'none', width: 1, dash: false, opacity: 1 });
     pushHistory();
     finishText();
     render();
