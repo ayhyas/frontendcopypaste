@@ -7,25 +7,28 @@
 
   /* ─── State ───────────────────────────────────────────────────────────────── */
   let canvas, ctx, dpr, textArea;
-  let elements    = [];
-  let history     = ['[]'];
-  let histIdx     = 0;
-  let activeTool  = 'pen';
-  let activeStyle = { stroke: '#e2e8f0', fill: 'none', width: 2, dash: false, fontSize: 20 };
-  const BG_COLOR  = '#0b0b16';
-  let vp          = { x: 0, y: 0, s: 1 };
+  let elements     = [];
+  let history      = ['[]'];
+  let histIdx      = 0;
+  let activeTool   = 'pen';
+  let activeStyle  = { stroke: '#e2e8f0', fill: 'none', width: 2, dash: false, fontSize: 20 };
+  const BG_COLOR   = '#0b0b16';
+  let vp           = { x: 0, y: 0, s: 1 };
   let drawing      = null;
   let selected     = null;
   let dragOrigin   = null;
   let resizeHandle = null; // { handleId, originDx, originDy, snap }
   let panOrigin    = null;
-  let spaceDown   = false;
-  let isDown      = false;
-  let isOpen      = false;
-  let resources   = [];
+  let spaceDown    = false;
+  let isDown       = false;
+  let isOpen       = false;
+  let resources    = [];
+
+  // RAF batching — collapses rapid render() calls into one frame
+  let rafId        = null;
 
   // Cache loaded Image objects so canvas renders don't re-fetch on every frame
-  const imgCache  = new Map();
+  const imgCache   = new Map();
 
   /* ─── Public API ──────────────────────────────────────────────────────────── */
   window.CanvasApp = {
@@ -46,6 +49,7 @@
     setupResize();
     setupEvents();
     setupToolbar();
+    setupCtxMenu();
   }
 
   function openCanvas(existingElementsJson) {
@@ -57,7 +61,6 @@
     drawing  = null;
     vp       = { x: 0, y: 0, s: 1 };
     document.getElementById('drawingTitle').value = '';
-    // Pre-load any image elements that were saved
     elements.filter(el => el.type === 'image').forEach(el => loadImg(el.src));
     hideResPanel();
     document.getElementById('canvasOverlay').classList.add('canvas-overlay--open');
@@ -68,11 +71,18 @@
   function closeCanvas() {
     isOpen = false;
     finishText();
+    hideCtxMenu();
     selected = null;
     drawing  = null;
     elements = [];
     document.getElementById('canvasOverlay').classList.remove('canvas-overlay--open');
     document.getElementById('drawingTitle').value = '';
+  }
+
+  /* ─── RAF render scheduling ───────────────────────────────────────────────── */
+  function scheduleRender() {
+    if (rafId) return;
+    rafId = requestAnimationFrame(() => { rafId = null; render(); });
   }
 
   /* ─── Resize ──────────────────────────────────────────────────────────────── */
@@ -91,7 +101,7 @@
     canvas.style.width  = W + 'px';
     canvas.style.height = H + 'px';
     ctx.scale(dpr, dpr);
-    render();
+    render(); // immediate — canvas dimensions just changed
   }
 
   /* ─── Viewport ────────────────────────────────────────────────────────────── */
@@ -118,11 +128,21 @@
   }
 
   function undo() {
-    if (histIdx > 0) { histIdx--; elements = JSON.parse(history[histIdx]); selected = null; resizeHandle = null; dragOrigin = null; render(); }
+    if (histIdx > 0) {
+      histIdx--;
+      elements = JSON.parse(history[histIdx]);
+      selected = null; resizeHandle = null; dragOrigin = null;
+      scheduleRender();
+    }
   }
 
   function redo() {
-    if (histIdx < history.length - 1) { histIdx++; elements = JSON.parse(history[histIdx]); selected = null; resizeHandle = null; dragOrigin = null; render(); }
+    if (histIdx < history.length - 1) {
+      histIdx++;
+      elements = JSON.parse(history[histIdx]);
+      selected = null; resizeHandle = null; dragOrigin = null;
+      scheduleRender();
+    }
   }
 
   /* ─── ID ──────────────────────────────────────────────────────────────────── */
@@ -243,7 +263,7 @@
   function loadImg(src) {
     if (imgCache.has(src)) return imgCache.get(src);
     const img = new Image();
-    img.onload = () => { imgCache.set(src, img); render(); };
+    img.onload = () => { imgCache.set(src, img); scheduleRender(); };
     img.src = src;
     imgCache.set(src, img);
     return img;
@@ -462,6 +482,8 @@
     canvas.addEventListener('mouseup',     onUp);
     canvas.addEventListener('mouseleave',  onUp);
     canvas.addEventListener('click',       onCanvasClick);
+    canvas.addEventListener('dblclick',    onDblClick);
+    canvas.addEventListener('contextmenu', onContextMenu);
     canvas.addEventListener('wheel',       onWheel, { passive: false });
     canvas.addEventListener('touchstart',  e => { e.preventDefault(); onDown(e); }, { passive: false });
     canvas.addEventListener('touchmove',   e => { e.preventDefault(); onMove(e); }, { passive: false });
@@ -481,14 +503,21 @@
 
     if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
     if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
+    if (mod && e.key === 'd' && selected && !inInput) {
+      e.preventDefault(); execCtxCmd('duplicate'); return;
+    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && selected && !inInput) {
       elements = elements.filter(el => el.id !== selected);
       selected = null;
       pushHistory();
-      render();
+      scheduleRender();
       return;
     }
-    if (e.key === 'Escape') { selected = null; resizeHandle = null; dragOrigin = null; finishText(); render(); return; }
+    if (e.key === 'Escape') {
+      hideCtxMenu();
+      selected = null; resizeHandle = null; dragOrigin = null;
+      finishText(); scheduleRender(); return;
+    }
     if (e.key === ' ' && !inInput) { e.preventDefault(); spaceDown = true; canvas.style.cursor = 'grab'; }
 
     // Tool shortcuts (only when not typing)
@@ -498,6 +527,132 @@
     }
   }
 
+  /* ─── Double-click: select element or re-edit text ───────────────────────── */
+  function onDblClick(e) {
+    if (e.button !== 0 || spaceDown) return;
+    const { mx, my } = clientPos(e);
+    const { x: dx, y: dy } = toDoc(mx, my);
+    const id = hitTest(dx, dy);
+    if (!id) return;
+
+    const el = elements.find(el => el.id === id);
+    if (!el) return;
+
+    if (el.type === 'text') {
+      // Re-enter edit mode: remove element, re-open textarea with its content
+      finishText();
+      elements = elements.filter(e => e.id !== id);
+      selected = null;
+      activeStyle.fontSize = el.fontSize || 20;
+      activeStyle.stroke   = el.stroke   || activeStyle.stroke;
+      selectTool('text');
+
+      const sx = el.x * vp.s + vp.x;
+      const sy = el.y * vp.s + vp.y;
+      placeText(sx, sy, el.x, el.y);
+      textArea.value = el.text || '';
+      textArea.dispatchEvent(new Event('input')); // trigger grow + preview
+    } else {
+      // Select the element and switch to select tool
+      finishText();
+      selected = id;
+      selectTool('select');
+      syncToolbarToElement(el);
+      scheduleRender();
+    }
+  }
+
+  /* ─── Right-click context menu ────────────────────────────────────────────── */
+  function onContextMenu(e) {
+    e.preventDefault();
+    if (!isOpen) return;
+    const { mx, my } = clientPos(e);
+    const { x: dx, y: dy } = toDoc(mx, my);
+    const id = hitTest(dx, dy);
+
+    if (!id) { hideCtxMenu(); return; }
+
+    // Select the right-clicked element
+    if (selected !== id) {
+      selected = id;
+      const el = elements.find(el => el.id === id);
+      if (el) syncToolbarToElement(el);
+      scheduleRender();
+    }
+
+    const menu = document.getElementById('canvasCtxMenu');
+    if (!menu) return;
+
+    // Position (keep inside viewport)
+    const vw = window.innerWidth, vh = window.innerHeight;
+    let left = e.clientX + 4, top = e.clientY + 4;
+    menu.style.display = 'block';
+    const mw = menu.offsetWidth, mh = menu.offsetHeight;
+    if (left + mw > vw) left = e.clientX - mw - 4;
+    if (top  + mh > vh) top  = e.clientY - mh - 4;
+    menu.style.left = left + 'px';
+    menu.style.top  = top  + 'px';
+  }
+
+  function hideCtxMenu() {
+    const menu = document.getElementById('canvasCtxMenu');
+    if (menu) menu.style.display = 'none';
+  }
+
+  function execCtxCmd(cmd) {
+    hideCtxMenu();
+    if (!selected) return;
+    const idx = elements.findIndex(e => e.id === selected);
+    if (idx === -1) return;
+
+    switch (cmd) {
+      case 'delete':
+        elements.splice(idx, 1);
+        selected = null;
+        pushHistory();
+        scheduleRender();
+        break;
+      case 'duplicate': {
+        const clone = JSON.parse(JSON.stringify(elements[idx]));
+        clone.id = genId();
+        // Offset clone so it's visually distinct
+        const off = 20 / vp.s;
+        if (clone.points) clone.points = clone.points.map(p => ({ x: p.x + off, y: p.y + off }));
+        else { clone.x = (clone.x || 0) + off; clone.y = (clone.y || 0) + off; }
+        if (clone.x2 !== undefined) { clone.x2 += off; clone.y2 += off; }
+        elements.push(clone);
+        selected = clone.id;
+        pushHistory();
+        scheduleRender();
+        break;
+      }
+      case 'front':
+        elements.push(elements.splice(idx, 1)[0]);
+        pushHistory();
+        scheduleRender();
+        break;
+      case 'back':
+        elements.unshift(elements.splice(idx, 1)[0]);
+        pushHistory();
+        scheduleRender();
+        break;
+    }
+  }
+
+  function setupCtxMenu() {
+    const menu = document.getElementById('canvasCtxMenu');
+    if (!menu) return;
+    menu.addEventListener('click', e => {
+      const btn = e.target.closest('[data-cmd]');
+      if (btn) execCtxCmd(btn.dataset.cmd);
+    });
+    // Dismiss on click outside the menu
+    document.addEventListener('mousedown', e => {
+      if (menu.style.display !== 'none' && !menu.contains(e.target)) hideCtxMenu();
+    }, true);
+  }
+
+  /* ─── Canvas click (text placement) ──────────────────────────────────────── */
   function onCanvasClick(e) {
     if (activeTool !== 'text' || spaceDown || e.button === 2) return;
     const { mx, my } = clientPos(e);
@@ -505,9 +660,11 @@
     placeText(mx, my, dx, dy);
   }
 
+  /* ─── Mouse down ──────────────────────────────────────────────────────────── */
   function onDown(e) {
-    if (e.button === 2) return; // ignore right-click
-    if (activeTool === 'text') return; // text placement handled by click event
+    if (e.button === 2) return;
+    if (activeTool === 'text') return;
+    hideCtxMenu();
     isDown = true;
     const { mx, my } = clientPos(e);
 
@@ -542,7 +699,7 @@
         dragOrigin = { dx, dy, snap: JSON.parse(JSON.stringify(el)) };
         syncToolbarToElement(el);
       }
-      render();
+      scheduleRender();
       return;
     }
 
@@ -561,10 +718,11 @@
       drawing = { ...base, type: activeTool, x: dx, y: dy, x2: dx, y2: dy };
   }
 
+  /* ─── Mouse move ──────────────────────────────────────────────────────────── */
   function onMove(e) {
     const { mx, my } = clientPos(e);
 
-    // Update cursor when hovering resize handles (not dragging, not panning)
+    // Update cursor when hovering resize handles (idle, not panning)
     if (!isDown && activeTool === 'select' && selected && !spaceDown) {
       const el = elements.find(el => el.id === selected);
       if (el) {
@@ -578,7 +736,7 @@
     if (panOrigin) {
       vp.x = panOrigin.vx + mx - panOrigin.mx;
       vp.y = panOrigin.vy + my - panOrigin.my;
-      render();
+      scheduleRender();
       return;
     }
 
@@ -589,7 +747,7 @@
       const ddx = dx - resizeHandle.originDx, ddy = dy - resizeHandle.originDy;
       const el  = elements.find(e => e.id === selected);
       if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy);
-      render();
+      scheduleRender();
       return;
     }
 
@@ -597,7 +755,7 @@
       const ddx = dx - dragOrigin.dx, ddy = dy - dragOrigin.dy;
       const el  = elements.find(e => e.id === selected);
       if (el) moveEl(el, dragOrigin.snap, ddx, ddy);
-      render();
+      scheduleRender();
       return;
     }
 
@@ -612,9 +770,10 @@
     } else if (drawing.type === 'line' || drawing.type === 'arrow') {
       drawing.x2 = dx; drawing.y2 = dy;
     }
-    render();
+    scheduleRender();
   }
 
+  /* ─── Mouse up ────────────────────────────────────────────────────────────── */
   function onUp() {
     if (!isDown) return;
     isDown = false;
@@ -629,13 +788,16 @@
     drawing  = null;
 
     // Discard noise
-    if (el.type === 'pen' && el.points.length < 3) { render(); return; }
-    if ((el.type === 'rect' || el.type === 'ellipse') && Math.abs(el.w) < 3 && Math.abs(el.h) < 3) { render(); return; }
-    if ((el.type === 'line' || el.type === 'arrow') && Math.abs(el.x2 - el.x) < 3 && Math.abs(el.y2 - el.y) < 3) { render(); return; }
+    if (el.type === 'pen' && el.points.length < 3) { scheduleRender(); return; }
+    if ((el.type === 'rect' || el.type === 'ellipse') && Math.abs(el.w) < 3 && Math.abs(el.h) < 3) { scheduleRender(); return; }
+    if ((el.type === 'line' || el.type === 'arrow') && Math.abs(el.x2 - el.x) < 3 && Math.abs(el.y2 - el.y) < 3) { scheduleRender(); return; }
 
     elements.push(el);
+    // Auto-select the just-drawn element and switch to select tool
+    selected = el.id;
+    selectTool('select');
     pushHistory();
-    render();
+    scheduleRender();
   }
 
   function onWheel(e) {
@@ -651,7 +813,7 @@
       vp.x -= e.deltaX;
       vp.y -= e.deltaY;
     }
-    render();
+    scheduleRender();
   }
 
   function eraseAt(dx, dy) {
@@ -660,7 +822,7 @@
       elements = elements.filter(e => e.id !== id);
       if (selected === id) selected = null;
       pushHistory();
-      render();
+      scheduleRender();
     }
   }
 
@@ -687,7 +849,7 @@
       else finishText();
     }
 
-    const fs   = activeStyle.fontSize * vp.s;
+    const fs    = activeStyle.fontSize * vp.s;
     const lineH = fs * 1.35;
 
     textArea.style.display    = 'block';
@@ -713,21 +875,20 @@
     textArea.oninput = () => {
       grow();
       drawing = mkTextPreview(dx, dy);
-      render();
+      scheduleRender();
     };
     textArea.onblur = () => {
       if (textArea.value.trim()) commitText();
       else finishText();
-      render();
+      scheduleRender();
     };
     textArea.onkeydown = e => {
-      if (e.key === 'Escape') { e.preventDefault(); finishText(); render(); return; }
-      // Plain Enter = commit; Shift+Enter = newline
+      if (e.key === 'Escape') { e.preventDefault(); finishText(); scheduleRender(); return; }
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         if (textArea.value.trim()) commitText();
         else finishText();
-        render();
+        scheduleRender();
       }
     };
 
@@ -752,7 +913,7 @@
                     fontSize: fs, fill: 'none', width: 1, dash: false, opacity: 1 });
     pushHistory();
     finishText();
-    render();
+    scheduleRender();
   }
 
   function finishText() {
@@ -768,14 +929,12 @@
   /* ─── Sync toolbar UI to selected element's properties ───────────────────── */
   function syncToolbarToElement(el) {
     if (!el) return;
-    // Stroke color
     if (el.stroke) {
       activeStyle.stroke = el.stroke;
       document.querySelectorAll('[data-color]').forEach(s => s.classList.toggle('color-active', s.dataset.color === el.stroke));
       const si = document.getElementById('strokeColorInput');
       if (si) si.value = el.stroke;
     }
-    // Fill
     if (el.fill !== undefined) {
       activeStyle.fill = el.fill;
       const isSolid = el.fill !== 'none';
@@ -787,17 +946,14 @@
         if (fi) fi.value = el.fill;
       }
     }
-    // Stroke width
     if (el.width !== undefined) {
       activeStyle.width = el.width;
       document.querySelectorAll('[data-sw]').forEach(b => b.classList.toggle('sw-active', +b.dataset.sw === el.width));
     }
-    // Dash
     if (el.dash !== undefined) {
       activeStyle.dash = !!el.dash;
       document.getElementById('dashToggle')?.classList.toggle('tool-active', activeStyle.dash);
     }
-    // Font size (text only)
     if (el.fontSize) {
       activeStyle.fontSize = el.fontSize;
       const fi = document.getElementById('fontSizeInput');
@@ -812,7 +968,7 @@
     if (!el) return;
     Object.assign(el, props);
     pushHistory();
-    render();
+    scheduleRender();
   }
 
   /* ─── Paste from clipboard ────────────────────────────────────────────────── */
@@ -835,7 +991,7 @@
           imgCache.set(dataUrl, img);
           elements.push({ id: genId(), type: 'image', x: cx - w/2, y: cy - h/2, w, h, src: dataUrl, opacity: 1 });
           pushHistory();
-          render();
+          scheduleRender();
         };
         img.src = dataUrl;
       };
@@ -891,7 +1047,7 @@
                       fontSize: activeStyle.fontSize, fill: 'none', width: 1, dash: false, opacity: 1 });
     }
     pushHistory();
-    render();
+    scheduleRender();
   }
 
   /* ─── Toolbar ─────────────────────────────────────────────────────────────── */
@@ -930,7 +1086,6 @@
     });
 
     document.getElementById('fillColorInput')?.addEventListener('input', (e) => {
-      // Only apply when solid fill is active (fill !== 'none')
       if (activeStyle.fill !== 'none') {
         activeStyle.fill = e.target.value;
         applyToSelected({ fill: activeStyle.fill });
@@ -970,11 +1125,11 @@
     document.getElementById('canvasRedo')?.addEventListener('click', redo);
     document.getElementById('canvasClear')?.addEventListener('click', () => {
       if (!elements.length) return;
-      elements = []; selected = null; pushHistory(); render();
+      elements = []; selected = null; pushHistory(); scheduleRender();
     });
     document.getElementById('canvasZoomIn')  ?.addEventListener('click', () => zoom(1.25));
     document.getElementById('canvasZoomOut') ?.addEventListener('click', () => zoom(0.8));
-    document.getElementById('canvasZoomReset')?.addEventListener('click', () => { vp = { x: 0, y: 0, s: 1 }; render(); });
+    document.getElementById('canvasZoomReset')?.addEventListener('click', () => { vp = { x: 0, y: 0, s: 1 }; scheduleRender(); });
     document.getElementById('saveDrawingBtn')?.addEventListener('click', doSave);
     document.getElementById('cancelDrawingBtn')?.addEventListener('click', closeCanvas);
     document.getElementById('canvasCloseBtn')?.addEventListener('click', closeCanvas);
@@ -985,6 +1140,9 @@
     activeTool = tool;
     finishText();
     document.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('tool-active', b.dataset.tool === tool));
+    // Show font-size control only for text tool
+    const fg = document.getElementById('fontSizeGroup');
+    if (fg) fg.style.display = tool === 'text' ? '' : 'none';
     syncCursor();
   }
 
@@ -999,7 +1157,7 @@
     vp.x = cx - (cx - vp.x) * (ns / vp.s);
     vp.y = cy - (cy - vp.y) * (ns / vp.s);
     vp.s = ns;
-    render();
+    scheduleRender();
   }
 
   function updateZoomLabel() {
@@ -1022,7 +1180,6 @@
     oc.translate(vp.x * rx, vp.y * ry);
     oc.scale(vp.s * rx, vp.s * ry);
 
-    // temporarily swap ctx so renderEl uses oc
     const saved = ctx;
     ctx = oc;
     elements.forEach(el => renderEl(oc, el));
@@ -1056,7 +1213,7 @@
     btn.disabled    = true;
     btn.textContent = 'Saving…';
     try {
-      const preview = exportPreview();
+      const preview  = exportPreview();
       const elemJson = JSON.stringify(elements);
       if (typeof window.CanvasApp.onSave === 'function') {
         await window.CanvasApp.onSave(title, elemJson, preview);

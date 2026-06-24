@@ -657,6 +657,36 @@
     </div>
   </div><!-- /.canvas-overlay -->
 
+  <!-- ─── Canvas right-click context menu ───────────────────────────── -->
+  <div id="canvasCtxMenu" class="canvas-ctx-menu" style="display:none">
+    <button class="ctx-menu-item" data-cmd="duplicate">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>
+      Duplicate <kbd>Ctrl D</kbd>
+    </button>
+    <div class="ctx-menu-divider"></div>
+    <button class="ctx-menu-item" data-cmd="front">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>
+      </svg>
+      Bring to front
+    </button>
+    <button class="ctx-menu-item" data-cmd="back">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="17 6 12 11 7 6"/><polyline points="17 13 12 18 7 13"/>
+      </svg>
+      Send to back
+    </button>
+    <div class="ctx-menu-divider"></div>
+    <button class="ctx-menu-item ctx-menu-item--danger" data-cmd="delete">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/>
+      </svg>
+      Delete <kbd>Del</kbd>
+    </button>
+  </div>
+
   <!-- ─── Toast container ────────────────────────────────────────────── -->
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
