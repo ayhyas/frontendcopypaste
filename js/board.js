@@ -12,7 +12,7 @@
   let socket             = null;
   let isModalOpen        = false;
   let workspaces         = [];
-  let currentWorkspaceId = null; // null = All clips
+  let currentWorkspaceId = null;
   let onlineUsers        = [];   // [{ username, profilePic }]
 
   // username → base64 profile pic; seeded with current user, updated via socket
@@ -125,7 +125,6 @@
   initNavbar();
   connectSocket();
   loadWorkspaces(); // kicks off loadClips / loadDrawings / loadResources once workspaces are known
-  if (!isAdmin) document.getElementById('wsAllItem').style.display = 'none';
   setupPaste();
   setupDragDrop();
   setupFileUpload();
@@ -282,7 +281,7 @@
         }
       }
 
-      const inView = currentWorkspaceId === null || data.workspace === currentWorkspaceId;
+      const inView = data.workspace === currentWorkspaceId;
       if (!inView) return;
 
       clips.unshift(data);
@@ -321,7 +320,7 @@
       workspaces.push(data);
       appendWorkspaceItem(data);
       // Non-admin with no workspace selected: auto-select the newly arrived workspace
-      if (!isAdmin && currentWorkspaceId === null) selectWorkspace(data._id);
+      if (currentWorkspaceId === null) selectWorkspace(data._id);
     });
 
     socket.on('workspace:updated', ({ data }) => {
@@ -336,7 +335,20 @@
     socket.on('workspace:deleted', ({ id }) => {
       workspaces = workspaces.filter((w) => w._id !== id);
       document.querySelector(`.ws-item[data-id="${id}"]`)?.remove();
-      if (currentWorkspaceId === id) selectWorkspace(null);
+      if (currentWorkspaceId === id) {
+        if (workspaces.length > 0) selectWorkspace(workspaces[0]._id);
+        else {
+          currentWorkspaceId = null;
+          document.getElementById('boardTitle').textContent = 'No workspaces';
+          document.getElementById('emptyStateText').textContent = isAdmin
+            ? 'No workspaces yet — create one to get started.'
+            : 'No workspaces available — ask your admin to create one.';
+          document.getElementById('clipsGrid').innerHTML = '';
+          document.getElementById('drawingsGrid').innerHTML = '';
+          document.getElementById('resourcesGrid').innerHTML = '';
+          document.getElementById('emptyState').style.display = 'flex';
+        }
+      }
     });
 
     socket.on('workspace:lock-changed', ({ id, isLocked }) => {
@@ -353,10 +365,7 @@
 
     // ─── Drawings ───────────────────────────────────────────────────────────
     socket.on('drawing:new', ({ data }) => {
-      // Only show if it belongs to the current workspace view
-      const inScope = currentWorkspaceId === null
-        || String(data.workspace) === String(currentWorkspaceId);
-      if (!inScope) return;
+      if (String(data.workspace) !== String(currentWorkspaceId)) return;
       if (document.querySelector(`.drawing-card[data-id="${data._id}"]`)) return;
       drawings.unshift(data);
       const drawingsGrid = document.getElementById('drawingsGrid');
@@ -373,10 +382,7 @@
     });
 
     socket.on('resource:new', ({ resource }) => {
-      // Only show if it belongs to the current workspace view
-      const inScope = currentWorkspaceId === null
-        || String(resource.workspace) === String(currentWorkspaceId);
-      if (!inScope) return;
+      if (String(resource.workspace) !== String(currentWorkspaceId)) return;
       if (resources.find(r => r._id === resource._id)) return;
       resources.unshift(resource);
       const grid    = document.getElementById('resourcesGrid');
@@ -1216,28 +1222,21 @@
       workspaces = data;
       workspaces.forEach((ws) => appendWorkspaceItem(ws));
 
-      if (!isAdmin) {
-        if (workspaces.length > 0) {
-          // selectWorkspace triggers loadClips + loadDrawings + loadResources
-          selectWorkspace(workspaces[0]._id);
-        } else {
-          // No workspaces yet: show placeholder state
-          document.getElementById('boardTitle').textContent = 'No workspaces';
-          document.getElementById('emptyStateText').textContent = 'No workspaces available — ask your admin to create one.';
-          document.getElementById('loadingState').style.display = 'none';
-          document.getElementById('emptyState').style.display = 'flex';
-          loadDrawings();
-          loadResources();
-        }
+      if (workspaces.length > 0) {
+        // Auto-select first workspace for everyone — triggers loadClips + loadDrawings + loadResources
+        selectWorkspace(workspaces[0]._id);
       } else {
-        // Admin: load all content (null workspace = global view)
-        loadClips(1);
-        loadDrawings();
-        loadResources();
+        // No workspaces yet: show placeholder
+        document.getElementById('boardTitle').textContent = 'No workspaces';
+        const emptyText = document.getElementById('emptyStateText');
+        if (emptyText) emptyText.textContent = isAdmin
+          ? 'No workspaces yet — create one to get started.'
+          : 'No workspaces available — ask your admin to create one.';
+        document.getElementById('loadingState').style.display = 'none';
+        document.getElementById('emptyState').style.display = 'flex';
       }
     } catch (err) {
       if (err.status === 401) logout();
-      else { loadClips(1); loadDrawings(); loadResources(); }
     }
   }
 
@@ -1320,24 +1319,15 @@
 
     // Update active state
     document.querySelectorAll('.ws-item').forEach((el) => el.classList.remove('ws-item-active'));
-    const target = id
-      ? document.querySelector(`.ws-item[data-id="${id}"]`)
-      : document.getElementById('wsAllItem');
-    target?.classList.add('ws-item-active');
+    document.querySelector(`.ws-item[data-id="${id}"]`)?.classList.add('ws-item-active');
 
     // Update board title
-    if (!id) {
-      updateBoardTitle('All clips');
-    } else {
-      const ws = workspaces.find((w) => w._id === id);
-      if (ws) updateBoardTitle(ws.name);
-    }
+    const ws = workspaces.find((w) => w._id === id);
+    if (ws) updateBoardTitle(ws.name);
 
     // Update empty state message
     const emptyText = document.getElementById('emptyStateText');
-    if (emptyText) {
-      emptyText.textContent = id ? 'No clips in this workspace yet.' : 'No clips yet — be the first to share!';
-    }
+    if (emptyText) emptyText.textContent = 'No clips in this workspace yet.';
 
     // Reload all content for new workspace
     currentPage = 1;
@@ -1395,7 +1385,7 @@
   }
 
   async function deleteWorkspaceHandler(wsId, wsName) {
-    if (!confirm(`Delete workspace "${wsName}"?\n\nClips inside will be moved to All clips.`)) return;
+    if (!confirm(`Delete workspace "${wsName}"?\n\nAll clips, drawings, and resources inside will be removed.`)) return;
     try {
       await api.workspaces.remove(wsId);
     } catch (err) {
@@ -1539,7 +1529,6 @@
   }
 
   function setupWorkspaceSidebar() {
-    document.getElementById('wsAllItem').addEventListener('click', () => selectWorkspace(null));
     document.getElementById('addWorkspaceBtn').addEventListener('click', () => {
       const form = document.getElementById('wsNewForm');
       form.style.display = form.style.display === 'none' ? '' : 'none';
