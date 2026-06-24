@@ -36,8 +36,8 @@
   let frameCtx              = null;
   let frameVideo            = null;
 
-  // Workspace lock state
-  const unlockedWorkspaces = new Set(); // workspace IDs unlocked this session
+  // Workspace lock state — Map of wsId → accessToken (JWT)
+  const unlockedWorkspaces = new Map();
 
   // Audio streaming state
   let broadcasterMicStream  = null; // broadcaster's own mic MediaStream
@@ -212,7 +212,14 @@
       transports: ['websocket', 'polling'], // start with WebSocket, skip polling upgrade round-trip
     });
 
-    socket.on('connect', () => setConnectionStatus(true));
+    socket.on('connect', () => {
+      setConnectionStatus(true);
+      // Re-join workspace room after reconnect
+      if (currentWorkspaceId) {
+        const wsToken = unlockedWorkspaces.get(currentWorkspaceId) || null;
+        socket.emit('ws:join', { wsId: currentWorkspaceId, wsToken });
+      }
+    });
     socket.on('disconnect', () => setConnectionStatus(false));
     socket.on('connect_error', () => setConnectionStatus(false));
 
@@ -355,10 +362,35 @@
       const ws = workspaces.find((w) => w._id === id);
       if (!ws) return;
       ws.isLocked = isLocked;
-      if (!isLocked) {
-        ws.lockPassword = null;
-        unlockedWorkspaces.delete(id);
+      if (!isLocked) ws.lockPassword = null;
+
+      // Always revoke the stored token when lock state changes
+      unlockedWorkspaces.delete(id);
+      socket.emit('ws:leave', { wsId: id });
+
+      if (currentWorkspaceId === id) {
+        api.setWorkspaceToken(null);
+        // Clear all visible content
+        clips = []; drawings = []; resources = [];
+        document.getElementById('clipsGrid').innerHTML     = '';
+        document.getElementById('drawingsGrid').innerHTML  = '';
+        document.getElementById('resourcesGrid').innerHTML = '';
+        updateClipCount(0);
+        updateDrawingCount(0);
+
+        if (isLocked) {
+          showToast('This workspace has been locked by the admin', 'info');
+          openUnlockModal(ws);
+        } else {
+          // Admin removed the lock — rejoin freely and reload
+          api.setWorkspaceToken(null);
+          socket.emit('ws:join', { wsId: id, wsToken: null });
+          loadClips(1);
+          loadDrawings();
+          loadResources();
+        }
       }
+
       const existing = document.querySelector(`.ws-item[data-id="${id}"]`);
       if (existing) existing.replaceWith(buildWorkspaceItem(ws));
     });
@@ -639,6 +671,26 @@
     text.textContent = online ? 'Live' : 'Reconnecting…';
   }
 
+  function handleWorkspaceLocked() {
+    if (!currentWorkspaceId) return;
+    unlockedWorkspaces.delete(currentWorkspaceId);
+    api.setWorkspaceToken(null);
+    if (socket) socket.emit('ws:leave', { wsId: currentWorkspaceId });
+    clips = []; drawings = []; resources = [];
+    clipsGrid.innerHTML     = '';
+    document.getElementById('drawingsGrid').innerHTML  = '';
+    document.getElementById('resourcesGrid').innerHTML = '';
+    updateClipCount(0);
+    updateDrawingCount(0);
+    const ws = workspaces.find((w) => w._id === currentWorkspaceId);
+    if (ws) {
+      ws.isLocked = true;
+      const li = document.querySelector(`.ws-item[data-id="${currentWorkspaceId}"]`);
+      if (li) li.replaceWith(buildWorkspaceItem(ws));
+      openUnlockModal(ws);
+    }
+  }
+
   // ─── Load clips ────────────────────────────────────────────────────────────
   async function loadClips(page = 1) {
     try {
@@ -659,6 +711,7 @@
       loadMoreWrapper.style.display = pagination.hasMore ? 'flex' : 'none';
     } catch (err) {
       if (err.status === 401) return logout();
+      if (err.status === 403 && err.code === 'WORKSPACE_LOCKED') return handleWorkspaceLocked();
       clipsGrid.innerHTML = '';
       showToast('Failed to load clips', 'error');
     }
@@ -1315,9 +1368,19 @@
   }
 
   function selectWorkspace(id) {
+    // Leave previous room
+    if (currentWorkspaceId && currentWorkspaceId !== id && socket) {
+      socket.emit('ws:leave', { wsId: currentWorkspaceId });
+    }
+
     currentWorkspaceId = id;
 
-    // Update active state
+    // Set API token for this workspace and join its socket room
+    const wsToken = unlockedWorkspaces.get(id) || null;
+    api.setWorkspaceToken(wsToken);
+    if (socket && id) socket.emit('ws:join', { wsId: id, wsToken });
+
+    // Update active state in sidebar
     document.querySelectorAll('.ws-item').forEach((el) => el.classList.remove('ws-item-active'));
     document.querySelector(`.ws-item[data-id="${id}"]`)?.classList.add('ws-item-active');
 
@@ -1508,11 +1571,11 @@
       errEl.textContent = '';
       btn.disabled = true;
       try {
-        await api.workspaces.verify(unlockModalWs._id, password);
-        unlockedWorkspaces.add(unlockModalWs._id);
+        const result = await api.workspaces.verify(unlockModalWs._id, password);
         const wsId = unlockModalWs._id;
+        unlockedWorkspaces.set(wsId, result.accessToken);
         closeUnlockModal();
-        selectWorkspace(wsId);
+        selectWorkspace(wsId); // picks up the token from unlockedWorkspaces
       } catch (err) {
         errEl.textContent = err.message || 'Incorrect password';
         document.getElementById('wsUnlockInput').focus();
@@ -2593,6 +2656,7 @@
       }
       updateDrawingCount(drawings.length);
     } catch (err) {
+      if (err.status === 403 && err.code === 'WORKSPACE_LOCKED') { handleWorkspaceLocked(); return; }
       showToast('Could not load drawings', 'error');
     } finally {
       if (loadingEl) loadingEl.style.display = 'none';
@@ -2703,7 +2767,8 @@
       const res = await api.resources.list(currentWorkspaceId);
       resources = res.data || [];
       renderResourcesGrid();
-    } catch {
+    } catch (err) {
+      if (err.status === 403 && err.code === 'WORKSPACE_LOCKED') { handleWorkspaceLocked(); return; }
       showToast('Could not load resources', 'error');
     } finally {
       if (loadingEl) loadingEl.style.display = 'none';

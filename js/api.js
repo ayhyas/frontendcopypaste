@@ -1,10 +1,12 @@
 const api = (() => {
   const getToken = () => localStorage.getItem('cs_token');
+  let _wsToken = null;
 
   const request = async (path, options = {}) => {
     const token = getToken();
     const headers = { 'Content-Type': 'application/json', ...options.headers };
     if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (_wsToken) headers['x-workspace-token'] = _wsToken;
 
     const res = await fetch(`${CONFIG.API_URL}${path}`, { ...options, headers });
     const data = await res.json();
@@ -12,6 +14,7 @@ const api = (() => {
     if (!res.ok) {
       const err = new Error(data.message || 'Request failed');
       err.status = res.status;
+      err.code   = data.code || null;
       throw err;
     }
 
@@ -19,6 +22,7 @@ const api = (() => {
   };
 
   return {
+    setWorkspaceToken: (t) => { _wsToken = t || null; },
     auth: {
       register:         (body) => request('/api/auth/register',     { method: 'POST',  body: JSON.stringify(body) }),
       login:            (body) => request('/api/auth/login',         { method: 'POST',  body: JSON.stringify(body) }),
