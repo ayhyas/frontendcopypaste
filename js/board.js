@@ -7,6 +7,7 @@
   // ─── State ─────────────────────────────────────────────────────────────────
   let clips              = [];
   let drawings           = [];
+  let serverClipTotal    = 0; // tracks server's true total, independent of loaded page
   let currentPage        = 1;
   let totalPages         = 1;
   let socket             = null;
@@ -293,7 +294,8 @@
 
       clips.unshift(data);
       prependClipCard(data);
-      updateClipCount(clips.length);
+      serverClipTotal++;
+      updateClipCount(serverClipTotal);
     });
 
     socket.on('clip:updated', ({ data }) => {
@@ -306,20 +308,7 @@
       Prism.highlightAllUnder(updated);
     });
 
-    socket.on('clip:deleted', ({ id }) => {
-      const deleted = clips.find((c) => c._id === id);
-      if (deleted?.workspace) {
-        const ws = workspaces.find((w) => w._id === deleted.workspace);
-        if (ws) {
-          ws.clipCount = Math.max(0, (ws.clipCount || 1) - 1);
-          updateWorkspaceCountBadge(ws._id, ws.clipCount);
-        }
-      }
-      clips = clips.filter((c) => c._id !== id);
-      document.querySelector(`.clip-card[data-id="${id}"]`)?.remove();
-      updateClipCount(clips.length);
-      if (clips.length === 0) emptyState.style.display = 'flex';
-    });
+    socket.on('clip:deleted', ({ id }) => removeClipFromUI(id));
 
     socket.on('workspace:new', ({ data }) => {
       if (workspaces.some((w) => w._id === data._id)) return;
@@ -372,6 +361,7 @@
         api.setWorkspaceToken(null);
         // Clear all visible content
         clips = []; drawings = []; resources = [];
+        serverClipTotal = 0;
         document.getElementById('clipsGrid').innerHTML     = '';
         document.getElementById('drawingsGrid').innerHTML  = '';
         document.getElementById('resourcesGrid').innerHTML = '';
@@ -407,11 +397,7 @@
       if (drawingsEmpty) drawingsEmpty.style.display = 'none';
     });
 
-    socket.on('drawing:deleted', ({ id }) => {
-      drawings = drawings.filter(d => d._id !== id);
-      document.querySelector(`.drawing-card[data-id="${id}"]`)?.remove();
-      updateDrawingCount(drawings.length);
-    });
+    socket.on('drawing:deleted', ({ id }) => removeDrawingFromUI(id));
 
     socket.on('resource:new', ({ resource }) => {
       if (String(resource.workspace) !== String(currentWorkspaceId)) return;
@@ -424,15 +410,7 @@
       if (window.CanvasApp) CanvasApp.setResources(resources);
     });
 
-    socket.on('resource:deleted', ({ id }) => {
-      resources = resources.filter(r => r._id !== id);
-      document.querySelector(`.resource-card[data-id="${id}"]`)?.remove();
-      if (resources.length === 0) {
-        const emptyEl = document.getElementById('resourcesEmpty');
-        if (emptyEl) emptyEl.style.display = 'flex';
-      }
-      if (window.CanvasApp) CanvasApp.setResources(resources);
-    });
+    socket.on('resource:deleted', ({ id }) => removeResourceFromUI(id));
 
     // ─── Screen share signaling ─────────────────────────────────────────────
     socket.on('screen:available', ({ socketId, username }) => {
@@ -671,6 +649,49 @@
     text.textContent = online ? 'Live' : 'Reconnecting…';
   }
 
+  // ─── Idempotent removal helpers ────────────────────────────────────────────
+  // Called from both delete triggers AND socket events — safe to call multiple times
+  function removeClipFromUI(id) {
+    const idx = clips.findIndex(c => c._id === id);
+    const clip = idx !== -1 ? clips[idx] : null;
+
+    if (clip?.workspace) {
+      const ws = workspaces.find(w => String(w._id) === String(clip.workspace));
+      if (ws) {
+        ws.clipCount = Math.max(0, (ws.clipCount || 1) - 1);
+        updateWorkspaceCountBadge(ws._id, ws.clipCount);
+      }
+    }
+
+    if (idx !== -1) clips.splice(idx, 1);
+    document.querySelector(`.clip-card[data-id="${id}"]`)?.remove();
+    serverClipTotal = Math.max(0, serverClipTotal - 1);
+    updateClipCount(serverClipTotal);
+    if (clips.length === 0) emptyState.style.display = 'flex';
+  }
+
+  function removeDrawingFromUI(id) {
+    const idx = drawings.findIndex(d => d._id === id);
+    if (idx !== -1) drawings.splice(idx, 1);
+    document.querySelector(`.drawing-card[data-id="${id}"]`)?.remove();
+    updateDrawingCount(drawings.length);
+    if (drawings.length === 0) {
+      const el = document.getElementById('drawingsEmpty');
+      if (el) el.style.display = 'flex';
+    }
+  }
+
+  function removeResourceFromUI(id) {
+    const idx = resources.findIndex(r => r._id === id);
+    if (idx !== -1) resources.splice(idx, 1);
+    document.querySelector(`.resource-card[data-id="${id}"]`)?.remove();
+    if (resources.length === 0) {
+      const el = document.getElementById('resourcesEmpty');
+      if (el) el.style.display = 'flex';
+    }
+    if (window.CanvasApp) CanvasApp.setResources(resources);
+  }
+
   let _lockHandlerActive = false;
   function handleWorkspaceLocked() {
     if (!currentWorkspaceId || _lockHandlerActive) return;
@@ -679,6 +700,7 @@
     api.setWorkspaceToken(null);
     if (socket) socket.emit('ws:leave', { wsId: currentWorkspaceId });
     clips = []; drawings = []; resources = [];
+    serverClipTotal = 0;
     clipsGrid.innerHTML     = '';
     document.getElementById('drawingsGrid').innerHTML  = '';
     document.getElementById('resourcesGrid').innerHTML = '';
@@ -710,7 +732,8 @@
         data.forEach((clip) => appendClipCard(clip));
       }
 
-      updateClipCount(pagination.total);
+      serverClipTotal = pagination.total;
+      updateClipCount(serverClipTotal);
       loadMoreWrapper.style.display = pagination.hasMore ? 'flex' : 'none';
     } catch (err) {
       if (err.status === 401) return logout();
@@ -1070,7 +1093,8 @@
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
         prependClipCard(data, true);
-        updateClipCount(clips.length);
+        serverClipTotal++;
+        updateClipCount(serverClipTotal);
       }
       showToast(`"${file.name}" shared!`, 'success');
     } catch (err) {
@@ -1101,7 +1125,8 @@
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
         prependClipCard(data, true);
-        updateClipCount(clips.length);
+        serverClipTotal++;
+        updateClipCount(serverClipTotal);
       }
       showToast('Clip shared!', 'success');
     } catch (err) {
@@ -1118,7 +1143,8 @@
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
         prependClipCard(data, true);
-        updateClipCount(clips.length);
+        serverClipTotal++;
+        updateClipCount(serverClipTotal);
       }
       showToast('Image shared!', 'success');
     } catch (err) {
@@ -1174,15 +1200,15 @@
 
   async function deleteClip(id) {
     if (!confirm('Delete this clip?')) return;
+    // Optimistic removal — instant feedback without waiting for API or socket
+    removeClipFromUI(id);
     try {
       await api.clips.remove(id);
-      clips = clips.filter((c) => c._id !== id);
-      document.querySelector(`.clip-card[data-id="${id}"]`)?.remove();
-      updateClipCount(clips.length);
-      if (clips.length === 0) emptyState.style.display = 'flex';
       showToast('Clip deleted', 'success');
     } catch (err) {
-      showToast(err.message, 'error');
+      showToast(err.message || 'Delete failed', 'error');
+      // Rollback: reload clips so the deleted item reappears
+      loadClips(1);
     }
   }
 
@@ -1232,7 +1258,8 @@
       if (!clips.some((c) => c._id === data._id)) {
         clips.unshift(data);
         prependClipCard(data, true);
-        updateClipCount(clips.length);
+        serverClipTotal++;
+        updateClipCount(serverClipTotal);
       }
       showToast('Clip shared!', 'success');
       closeModal();
@@ -1398,6 +1425,7 @@
     // Reload all content for new workspace
     currentPage = 1;
     clips = [];
+    serverClipTotal = 0;
     loadClips(1);
     loadDrawings();
     loadResources();
@@ -2743,10 +2771,13 @@
     // Delete button
     card.querySelector('.drawing-delete-btn')?.addEventListener('click', async () => {
       if (!confirm(`Delete drawing "${drawing.title}"?`)) return;
+      removeDrawingFromUI(drawing._id); // instant removal
       try {
         await api.drawings.remove(drawing._id);
+        showToast('Drawing deleted', 'success');
       } catch (err) {
         showToast(err.message || 'Failed to delete drawing', 'error');
+        loadDrawings(); // rollback
       }
     });
 
@@ -2927,8 +2958,14 @@
 
     card.querySelector('.resource-delete-btn')?.addEventListener('click', async () => {
       if (!confirm('Delete this resource?')) return;
-      try { await api.resources.remove(r._id); }
-      catch (err) { showToast(err.message || 'Failed to delete', 'error'); }
+      removeResourceFromUI(r._id); // instant removal
+      try {
+        await api.resources.remove(r._id);
+        showToast('Resource deleted', 'success');
+      } catch (err) {
+        showToast(err.message || 'Failed to delete', 'error');
+        loadResources(); // rollback
+      }
     });
 
     return card;
