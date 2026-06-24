@@ -36,6 +36,16 @@
   let frameCtx              = null;
   let frameVideo            = null;
 
+  // Audio streaming state
+  let broadcasterMicStream  = null; // broadcaster's own mic MediaStream
+  let broadcasterMicEnabled = false;
+  let broadcasterMicPcs     = {};   // viewerSocketId → RTCPeerConnection (incoming viewer audio)
+  let streamViewers         = {};   // viewerSocketId → { username, profilePic, speaking }
+  let viewerMicStream       = null; // viewer's mic MediaStream
+  let viewerMicPc           = null; // viewer → broadcaster audio-only WebRTC connection
+  let viewerMicActive       = false;
+  let viewerMicPendingIce   = [];   // ICE candidates queued before mic:answer arrives
+
   const ICE_CONFIG = {
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
@@ -377,8 +387,13 @@
     });
 
     // Broadcaster: a viewer wants to connect
-    socket.on('screen:viewer-joined', async ({ viewerId }) => {
+    socket.on('screen:viewer-joined', async ({ viewerId, username, profilePic }) => {
       if (!isBroadcasting || !localStream) return;
+
+      // Track in viewer list
+      streamViewers[viewerId] = { username: username || 'Viewer', profilePic: profilePic || null, speaking: false };
+      renderStreamViewers();
+
       let pc;
       try { pc = createPeerConnection(); } catch { return; }
       peerConnections[viewerId] = pc;
@@ -391,6 +406,8 @@
         if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
           pc.close();
           delete peerConnections[viewerId];
+          delete streamViewers[viewerId];
+          renderStreamViewers();
           updateViewerCount();
         }
       };
@@ -491,6 +508,96 @@
         params.encodings[0].scaleResolutionDownBy = preset.scaleResolutionDownBy;
         sender.setParameters(params).catch(() => {});
       });
+    });
+
+    // Broadcaster: viewer's socket disconnected (server-side cleanup)
+    socket.on('screen:viewer-left', ({ viewerId }) => {
+      delete streamViewers[viewerId];
+      renderStreamViewers();
+    });
+
+    // ── Mic audio signaling ────────────────────────────────────────────────
+    // Broadcaster receives mic offer from a viewer
+    socket.on('mic:offer', async ({ viewerId, offer }) => {
+      if (!isBroadcasting) return;
+      let pc;
+      try { pc = createPeerConnection(); } catch { return; }
+      broadcasterMicPcs[viewerId] = pc;
+
+      pc.ontrack = ({ streams, track }) => {
+        if (track.kind !== 'audio') return;
+        let audio = document.getElementById(`viewer-audio-${viewerId}`);
+        if (!audio) {
+          audio = document.createElement('audio');
+          audio.id = `viewer-audio-${viewerId}`;
+          audio.autoplay = true;
+          document.getElementById('viewerAudioPlayers').appendChild(audio);
+        }
+        audio.srcObject = streams[0] || new MediaStream([track]);
+      };
+
+      pc.onicecandidate = ({ candidate }) => {
+        if (candidate) socket.emit('mic:ice', { targetId: viewerId, candidate });
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+          pc.close();
+          delete broadcasterMicPcs[viewerId];
+          document.getElementById(`viewer-audio-${viewerId}`)?.remove();
+          if (streamViewers[viewerId]) { streamViewers[viewerId].speaking = false; renderStreamViewers(); }
+        }
+      };
+
+      try {
+        await pc.setRemoteDescription(toSessionDescription(offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('mic:answer', { viewerId, answer: pc.localDescription });
+        if (streamViewers[viewerId]) { streamViewers[viewerId].speaking = true; renderStreamViewers(); }
+      } catch {}
+    });
+
+    // Broadcaster: viewer stopped their mic
+    socket.on('mic:stop', ({ viewerId }) => {
+      broadcasterMicPcs[viewerId]?.close();
+      delete broadcasterMicPcs[viewerId];
+      document.getElementById(`viewer-audio-${viewerId}`)?.remove();
+      if (streamViewers[viewerId]) { streamViewers[viewerId].speaking = false; renderStreamViewers(); }
+    });
+
+    // Viewer: broadcaster answered our mic offer
+    socket.on('mic:answer', async ({ answer }) => {
+      try {
+        await viewerMicPc?.setRemoteDescription(toSessionDescription(answer));
+        for (const c of viewerMicPendingIce) {
+          await viewerMicPc.addIceCandidate(c).catch(() => {});
+        }
+        viewerMicPendingIce = [];
+      } catch {}
+    });
+
+    // ICE candidates for mic connections (both sides)
+    socket.on('mic:ice', ({ fromId, candidate }) => {
+      const ice = safeIceCandidate(candidate);
+      if (!ice) return;
+      if (isBroadcasting) {
+        broadcasterMicPcs[fromId]?.addIceCandidate(ice).catch(() => {});
+      } else if (viewerMicPc) {
+        if (viewerMicPc.remoteDescription) {
+          viewerMicPc.addIceCandidate(ice).catch(() => {});
+        } else {
+          viewerMicPendingIce.push(ice);
+        }
+      }
+    });
+
+    // Viewer: admin muted our mic
+    socket.on('mic:muted', () => {
+      if (viewerMicActive) {
+        stopViewerMic();
+        showToast('Your microphone was muted by the broadcaster', 'info');
+      }
     });
   }
 
@@ -1318,6 +1425,28 @@
     });
     document.getElementById('liveMuteBtn').addEventListener('click', toggleMute);
 
+    // Viewer mic button
+    document.getElementById('viewerMicBtn').addEventListener('click', toggleViewerMic);
+
+    // Broadcaster panel: mic toggle
+    document.getElementById('bcastMicBtn').addEventListener('click', () => {
+      if (!broadcasterMicStream) {
+        showToast('Microphone not available — permission was denied', 'error');
+        return;
+      }
+      toggleBroadcasterMic();
+    });
+
+    // Broadcaster panel: viewers toggle
+    const bcastViewersBtn   = document.getElementById('bcastViewersBtn');
+    const bcastViewerListWrap = document.getElementById('bcastViewerListWrap');
+    bcastViewersBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = bcastViewerListWrap.hidden;
+      bcastViewerListWrap.hidden = !open;
+      bcastViewersBtn.setAttribute('aria-expanded', String(open));
+    });
+
     const liveVideo = document.getElementById('liveVideo');
     liveVideo.addEventListener('playing', () => {
       document.getElementById('liveConnecting').style.display = 'none';
@@ -1334,11 +1463,20 @@
       localStream    = stream;
       isBroadcasting = true;
 
+      // Also grab mic audio — silently continue if permission is denied
+      try {
+        const micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        broadcasterMicStream  = micStream;
+        broadcasterMicEnabled = true;
+        micStream.getAudioTracks().forEach((t) => localStream.addTrack(t));
+      } catch { /* mic denied or unavailable — no mic audio */ }
+
       // Triggers when the user clicks the browser's native "Stop sharing" button
       stream.getVideoTracks()[0].addEventListener('ended', stopBroadcasting);
 
       socket.emit('screen:start', { username: user.username });
       setBroadcastingUI(true);
+      showBroadcasterPanel(true);
     } catch (err) {
       if (err.name === 'NotAllowedError') return; // user cancelled picker — silent
       if (err.name === 'NotFoundError')     return showToast('No screen available to share', 'error');
@@ -1354,11 +1492,21 @@
     localStream    = null;
     isBroadcasting = false;
 
+    // Clean up mic
+    broadcasterMicStream?.getTracks().forEach((t) => t.stop());
+    broadcasterMicStream  = null;
+    broadcasterMicEnabled = false;
+    Object.values(broadcasterMicPcs).forEach((pc) => pc.close());
+    broadcasterMicPcs = {};
+    streamViewers = {};
+    document.querySelectorAll('[id^="viewer-audio-"]').forEach((el) => el.remove());
+
     Object.values(peerConnections).forEach((pc) => pc.close());
     peerConnections = {};
 
     socket.emit('screen:stop');
     setBroadcastingUI(false);
+    showBroadcasterPanel(false);
   }
 
   function startFrameCapture() {
@@ -1632,6 +1780,7 @@
   }
 
   function stopViewing() {
+    stopViewerMic();
     clearTimeout(connectingTimer);
     viewerPc?.close();
     viewerPc = null;
@@ -1667,6 +1816,151 @@
     btn.querySelector('svg').innerHTML = vid.muted
       ? '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'
       : '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>';
+  }
+
+  // ─── Broadcaster mic ───────────────────────────────────────────────────────
+  function toggleBroadcasterMic() {
+    if (!broadcasterMicStream) return;
+    broadcasterMicEnabled = !broadcasterMicEnabled;
+    broadcasterMicStream.getAudioTracks().forEach((t) => { t.enabled = broadcasterMicEnabled; });
+    updateBroadcasterMicBtn();
+  }
+
+  function updateBroadcasterMicBtn() {
+    const btn = document.getElementById('bcastMicBtn');
+    if (!btn) return;
+    const on = broadcasterMicEnabled && !!broadcasterMicStream;
+    btn.classList.toggle('bcast-mic-btn--on', on);
+    btn.title = on ? 'Mute microphone' : 'Unmute microphone';
+    btn.querySelector('svg').innerHTML = on
+      ? '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>'
+      : '<line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>';
+  }
+
+  function showBroadcasterPanel(visible) {
+    const panel = document.getElementById('bcastPanel');
+    if (!panel) return;
+    panel.style.display = visible ? 'flex' : 'none';
+    if (visible) {
+      updateBroadcasterMicBtn();
+      renderStreamViewers();
+    } else {
+      streamViewers = {};
+      document.getElementById('bcastViewerListWrap').hidden = true;
+      document.getElementById('bcastViewersBtn').setAttribute('aria-expanded', 'false');
+    }
+  }
+
+  function renderStreamViewers() {
+    const list    = document.getElementById('bcastViewerList');
+    const empty   = document.getElementById('bcastViewerEmpty');
+    const countEl = document.getElementById('bcastViewerCount');
+    if (!list) return;
+
+    const entries = Object.entries(streamViewers);
+    if (countEl) countEl.textContent = entries.length;
+
+    if (entries.length === 0) {
+      list.innerHTML = '';
+      if (empty) empty.style.display = 'block';
+      return;
+    }
+    if (empty) empty.style.display = 'none';
+
+    list.innerHTML = entries.map(([socketId, { username, profilePic, speaking }]) => {
+      const avatarStyle   = profilePic
+        ? `background:none;background-image:url(${profilePic});background-size:cover;background-position:center`
+        : `background:${getAvatarColor(username)}`;
+      const avatarContent = profilePic ? '' : username[0].toUpperCase();
+      return `
+        <li class="bcast-viewer-item">
+          <div class="avatar avatar-xs" style="${avatarStyle}">${avatarContent}</div>
+          <span class="bcast-viewer-name${speaking ? ' bcast-viewer-speaking' : ''}">${escapeHtml(username)}</span>
+          ${speaking ? `
+          <button class="bcast-mute-btn" title="Mute mic" data-target="${escapeHtml(socketId)}">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+              <line x1="1" y1="1" x2="23" y2="23"/>
+              <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+              <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+              <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+            </svg>
+          </button>` : ''}
+        </li>`;
+    }).join('');
+
+    list.querySelectorAll('.bcast-mute-btn').forEach((btn) => {
+      btn.addEventListener('click', () => socket.emit('mic:mute', { targetId: btn.dataset.target }));
+    });
+  }
+
+  // ─── Viewer mic ────────────────────────────────────────────────────────────
+  async function startViewerMic() {
+    if (viewerMicActive || !activeBroadcasterId) return;
+    try {
+      viewerMicStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    } catch {
+      showToast('Microphone access denied', 'error');
+      return;
+    }
+
+    let pc;
+    try { pc = createPeerConnection(); } catch {
+      viewerMicStream.getTracks().forEach((t) => t.stop());
+      viewerMicStream = null;
+      return;
+    }
+    viewerMicPc    = pc;
+    viewerMicActive = true;
+    viewerMicPendingIce = [];
+
+    viewerMicStream.getAudioTracks().forEach((t) => pc.addTrack(t, viewerMicStream));
+
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate) socket.emit('mic:ice', { targetId: activeBroadcasterId, candidate });
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (['disconnected', 'failed', 'closed'].includes(pc.connectionState)) {
+        stopViewerMic(false);
+      }
+    };
+
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.emit('mic:offer', { broadcasterId: activeBroadcasterId, offer: pc.localDescription });
+      updateViewerMicBtn(true);
+    } catch {
+      stopViewerMic(false);
+    }
+  }
+
+  function stopViewerMic(notifyServer = true) {
+    if (!viewerMicActive && !viewerMicPc) return;
+    viewerMicActive     = false;
+    viewerMicPendingIce = [];
+    viewerMicStream?.getTracks().forEach((t) => t.stop());
+    viewerMicStream = null;
+    viewerMicPc?.close();
+    viewerMicPc = null;
+    if (notifyServer && activeBroadcasterId) {
+      socket.emit('mic:stop', { broadcasterId: activeBroadcasterId });
+    }
+    updateViewerMicBtn(false);
+  }
+
+  function toggleViewerMic() {
+    if (viewerMicActive) stopViewerMic(); else startViewerMic();
+  }
+
+  function updateViewerMicBtn(active) {
+    const btn = document.getElementById('viewerMicBtn');
+    if (!btn) return;
+    btn.classList.toggle('live-mic-btn--on', active);
+    btn.title = active ? 'Mute microphone' : 'Activate microphone';
+    btn.querySelector('svg').innerHTML = active
+      ? '<path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>'
+      : '<line x1="1" y1="1" x2="23" y2="23"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/><path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>';
   }
 
   function showLiveBanner(username) {

@@ -398,6 +398,15 @@
             <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
           </svg>
         </button>
+        <button class="live-ctrl-btn live-mic-btn" id="viewerMicBtn" title="Activate microphone">
+          <!-- mic-off icon by default -->
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="1" y1="1" x2="23" y2="23"/>
+            <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+            <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+            <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+          </svg>
+        </button>
         <button class="live-ctrl-btn" id="liveFullscreenBtn" title="Fullscreen">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/>
@@ -420,6 +429,37 @@
       </div>
     </div>
   </div>
+
+  <!-- ─── Broadcaster live panel (fixed, visible while broadcasting) ─── -->
+  <div class="bcast-panel" id="bcastPanel" style="display:none">
+    <div class="bcast-panel-row">
+      <span class="live-pill"><span class="live-dot"></span>LIVE</span>
+      <button class="bcast-mic-btn" id="bcastMicBtn" title="Microphone off">
+        <!-- mic-off by default; JS swaps icon when mic is active -->
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="1" y1="1" x2="23" y2="23"/>
+          <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6"/>
+          <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
+          <line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <button class="bcast-viewers-btn" id="bcastViewersBtn" title="Viewers" aria-expanded="false">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/>
+        </svg>
+        <span id="bcastViewerCount">0</span>
+      </button>
+    </div>
+    <div class="bcast-viewer-list-wrap" id="bcastViewerListWrap" hidden>
+      <ul class="bcast-viewer-list" id="bcastViewerList"></ul>
+      <p class="bcast-viewer-empty" id="bcastViewerEmpty">No viewers yet</p>
+    </div>
+  </div>
+
+  <!-- Hidden audio players for viewer mic streams (broadcaster hears them) -->
+  <div id="viewerAudioPlayers" aria-hidden="true" style="display:none"></div>
 
   <!-- ─── Canvas drawing overlay ─────────────────────────────────────── -->
   <div class="canvas-overlay" id="canvasOverlay">

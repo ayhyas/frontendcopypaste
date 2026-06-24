@@ -1204,6 +1204,52 @@ pre[class*="language-"] {
   color: var(--text-2); font-size: .9rem;
 }
 
+/* ─── Broadcaster live panel ─────────────────────────────────────────────────── */
+.bcast-panel {
+  position: fixed; bottom: 24px; right: 24px; z-index: 200;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.5);
+  min-width: 196px;
+}
+.bcast-panel-row { display: flex; align-items: center; gap: 8px; }
+.bcast-mic-btn, .bcast-viewers-btn {
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 10px; border-radius: 7px;
+  background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.08);
+  color: var(--text-2); cursor: pointer; font-size: .8rem;
+  transition: background .15s, color .15s;
+}
+.bcast-mic-btn:hover, .bcast-viewers-btn:hover {
+  background: rgba(255,255,255,.12); color: var(--text);
+}
+.bcast-mic-btn--on { background: rgba(124,58,237,.2); border-color: rgba(124,58,237,.4); color: #a78bfa; }
+.bcast-mic-btn--on:hover { background: rgba(124,58,237,.3); }
+.bcast-viewers-btn[aria-expanded="true"] { background: rgba(255,255,255,.1); color: var(--text); }
+.bcast-viewer-list-wrap { border-top: 1px solid var(--border); padding-top: 10px; }
+.bcast-viewer-list {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 180px; overflow-y: auto;
+}
+.bcast-viewer-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+.bcast-viewer-name { flex: 1; font-size: .82rem; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bcast-viewer-speaking { color: #4ade80; }
+.bcast-mute-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 6px;
+  background: transparent; border: 1px solid rgba(255,255,255,.08);
+  color: var(--text-3); cursor: pointer; flex-shrink: 0;
+  transition: background .15s, color .15s;
+}
+.bcast-mute-btn:hover { background: rgba(239,68,68,.15); color: #f87171; border-color: rgba(239,68,68,.3); }
+.bcast-viewer-empty { font-size: .8rem; color: var(--text-3); margin: 0; }
+
+/* ─── Viewer mic button (in live overlay) ────────────────────────────────────── */
+.live-mic-btn--on { background: rgba(124,58,237,.25) !important; color: #a78bfa !important; }
+.live-mic-btn--on:hover { background: rgba(124,58,237,.4) !important; }
+
 /* ─── Board layout ─────────────────────────────────────────────────────────── */
 .board-layout {
   display: flex;
