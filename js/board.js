@@ -32,9 +32,8 @@
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
     ],
+    iceCandidatePoolSize: 4, // pre-gather candidates before signaling starts
   };
 
   // ─── WebRTC compat helpers ──────────────────────────────────────────────────
@@ -120,7 +119,10 @@
 
   // ─── Socket.io ─────────────────────────────────────────────────────────────
   function connectSocket() {
-    socket = io(CONFIG.API_URL, { auth: { token } });
+    socket = io(CONFIG.API_URL, {
+      auth: { token },
+      transports: ['websocket', 'polling'], // start with WebSocket, skip polling upgrade round-trip
+    });
 
     socket.on('connect', () => setConnectionStatus(true));
     socket.on('disconnect', () => setConnectionStatus(false));
@@ -224,7 +226,29 @@
         }
       };
 
-      localStream.getTracks().forEach((track) => pc.addTrack(track, localStream));
+      localStream.getTracks().forEach((track) => {
+        const sender = pc.addTrack(track, localStream);
+        if (track.kind === 'video') {
+          const params = sender.getParameters();
+          if (!params.encodings || !params.encodings.length) params.encodings = [{}];
+          params.encodings[0].maxBitrate = 2_500_000; // 2.5 Mbps — prevents buffer-bloat stutter
+          sender.setParameters(params).catch(() => {});
+        }
+      });
+
+      // Prefer VP9 (better screen-content compression) then H.264 (hardware accel)
+      if (typeof RTCRtpSender !== 'undefined' && RTCRtpSender.getCapabilities) {
+        const caps = RTCRtpSender.getCapabilities('video');
+        if (caps) {
+          const preferred = caps.codecs.filter((c) => /VP9|H264/i.test(c.mimeType));
+          const rest      = caps.codecs.filter((c) => !/VP9|H264/i.test(c.mimeType));
+          pc.getTransceivers?.().forEach((t) => {
+            if (t.sender?.track?.kind === 'video') {
+              try { t.setCodecPreferences([...preferred, ...rest]); } catch {}
+            }
+          });
+        }
+      }
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -1159,9 +1183,9 @@
         if (!localStream) { stopFrameCapture(); return; }
         try {
           frameCtx.drawImage(frameVideo, 0, 0, w, h);
-          socket.emit('screen:frame', { frame: frameCanvas.toDataURL('image/jpeg', 0.5) });
+          socket.emit('screen:frame', { frame: frameCanvas.toDataURL('image/jpeg', 0.65) });
         } catch {}
-      }, 250); // 4 fps — low enough to stay well under Socket.io's limits
+      }, 125); // 8 fps @ JPEG 65% — smoother fallback, still well under Socket.io limits
     };
   }
 
@@ -1213,22 +1237,32 @@
       if (candidate) socket.emit('screen:ice', { targetId: activeBroadcasterId, candidate });
     };
 
+    let iceRestarted = false;
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
         clearTimeout(connectingTimer);
+        iceRestarted = false;
       }
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        clearTimeout(connectingTimer);
-        // If video never started (NAT failure etc.) → switch to canvas fallback silently
-        const vid = document.getElementById('liveVideo');
-        if (!vid.srcObject) {
-          viewerPc = null;
-          pc.close();
-          startFallbackViewing();
-        } else {
-          showToast('Stream connection lost', 'error');
-          stopViewing();
+
+      if (pc.connectionState === 'failed') {
+        // One ICE restart attempt before giving up (recovers most symmetric-NAT failures)
+        if (!iceRestarted && pc.restartIce) {
+          iceRestarted = true;
+          pc.restartIce();
+          socket.emit('screen:join', { broadcasterId: activeBroadcasterId });
+          return;
         }
+        clearTimeout(connectingTimer);
+        const vid = document.getElementById('liveVideo');
+        if (!vid.srcObject) { viewerPc = null; pc.close(); startFallbackViewing(); }
+        else { showToast('Stream connection lost', 'error'); stopViewing(); }
+      }
+
+      if (pc.connectionState === 'disconnected') {
+        clearTimeout(connectingTimer);
+        const vid = document.getElementById('liveVideo');
+        if (!vid.srcObject) { viewerPc = null; pc.close(); startFallbackViewing(); }
+        else { showToast('Stream connection lost', 'error'); stopViewing(); }
       }
     };
 
