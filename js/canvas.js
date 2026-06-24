@@ -885,9 +885,7 @@
     }
 
     textArea.oninput = () => {
-      grow();
-      drawing = mkTextPreview(dx, dy);
-      render(); // immediate — typing must update canvas preview instantly
+      grow(); // resize the textarea to fit content — no canvas re-render needed while typing
     };
     textArea.onblur = () => {
       if (textArea.value.trim()) commitText();
