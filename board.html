@@ -578,6 +578,8 @@
       </div>
 
       <div style="flex:1"></div>
+      <!-- Multi-selection count badge -->
+      <span class="canvas-sel-count" id="canvasSelCount" style="display:none"></span>
 
       <!-- Undo / Redo / Clear -->
       <div class="canvas-tool-group">
@@ -710,24 +712,49 @@
 
   <!-- ─── Canvas right-click context menu ───────────────────────────── -->
   <div id="canvasCtxMenu" class="canvas-ctx-menu" style="display:none">
-    <button class="ctx-menu-item" data-cmd="duplicate">
+    <button class="ctx-menu-item" data-cmd="copy">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
         <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+      </svg>
+      Copy <kbd>Ctrl C</kbd>
+    </button>
+    <button class="ctx-menu-item" data-cmd="duplicate">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="9" y="9" width="13" height="13" rx="2" stroke-dasharray="3 2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
       </svg>
       Duplicate <kbd>Ctrl D</kbd>
     </button>
     <div class="ctx-menu-divider"></div>
     <button class="ctx-menu-item" data-cmd="front">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>
+        <polyline points="17 4 12 9 7 4"/><line x1="12" y1="9" x2="12" y2="20"/>
       </svg>
       Bring to front
     </button>
+    <button class="ctx-menu-item" data-cmd="forward">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="17 11 12 6 7 11"/>
+      </svg>
+      Bring forward
+    </button>
+    <button class="ctx-menu-item" data-cmd="backward">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polyline points="17 13 12 18 7 13"/>
+      </svg>
+      Send backward
+    </button>
     <button class="ctx-menu-item" data-cmd="back">
       <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <polyline points="17 6 12 11 7 6"/><polyline points="17 13 12 18 7 13"/>
+        <polyline points="17 20 12 15 7 20"/><line x1="12" y1="15" x2="12" y2="4"/>
       </svg>
       Send to back
+    </button>
+    <div class="ctx-menu-divider"></div>
+    <button class="ctx-menu-item" data-cmd="select-all">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <rect x="3" y="3" width="18" height="18" rx="2" stroke-dasharray="3 2"/>
+      </svg>
+      Select all <kbd>Ctrl A</kbd>
     </button>
     <div class="ctx-menu-divider"></div>
     <button class="ctx-menu-item ctx-menu-item--danger" data-cmd="delete">

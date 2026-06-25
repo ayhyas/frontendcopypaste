@@ -15,18 +15,18 @@
   const BG_COLOR   = '#0b0b16';
   let vp           = { x: 0, y: 0, s: 1 };
   let drawing      = null;
-  let selected     = null;
-  let dragOrigin   = null;
-  let resizeHandle = null;
+  let selection    = new Set();   // set of selected element IDs
+  let clipboard    = [];          // internal copy/paste buffer (deep clones)
+  let lasso        = null;        // rubber-band { x1,y1,x2,y2,additive }
+  let dragOrigin   = null;        // { dx, dy, snap|snaps, isGroup }
+  let resizeHandle = null;        // { handleId, originDx, originDy, snap|snaps, uBounds?, isGroup }
   let panOrigin    = null;
   let spaceDown    = false;
   let isDown       = false;
   let isOpen       = false;
   let resources    = [];
 
-  // Only image-load callbacks use RAF (can fire many times while other frames are already pending)
   let imgRafId     = null;
-  // Tracks the pending focus RAF so finishText() can cancel it before it fires
   let textFocusRaf = null;
 
   const imgCache   = new Map();
@@ -55,13 +55,14 @@
   }
 
   function openCanvas(existingElementsJson) {
-    isOpen   = true;
-    elements = existingElementsJson ? JSON.parse(existingElementsJson) : [];
-    history  = [JSON.stringify(elements)];
-    histIdx  = 0;
-    selected = null;
-    drawing  = null;
-    vp       = { x: 0, y: 0, s: 1 };
+    isOpen    = true;
+    elements  = existingElementsJson ? JSON.parse(existingElementsJson) : [];
+    history   = [JSON.stringify(elements)];
+    histIdx   = 0;
+    selection.clear();
+    drawing   = null;
+    lasso     = null;
+    vp        = { x: 0, y: 0, s: 1 };
     document.getElementById('drawingTitle').value = '';
     elements.filter(el => el.type === 'image').forEach(el => loadImg(el.src));
     hideResPanel();
@@ -74,10 +75,10 @@
     isOpen = false;
     finishText();
     hideCtxMenu();
-    selected = null;
+    selection.clear();
     drawing  = null;
+    lasso    = null;
     elements = [];
-    // Exit fullscreen if active
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     document.getElementById('canvasOverlay').classList.remove('canvas-overlay--open');
     document.getElementById('drawingTitle').value = '';
@@ -124,7 +125,7 @@
     if (histIdx > 0) {
       histIdx--;
       elements = JSON.parse(history[histIdx]);
-      selected = null; resizeHandle = null; dragOrigin = null;
+      selection.clear(); resizeHandle = null; dragOrigin = null;
       render();
     }
   }
@@ -133,7 +134,7 @@
     if (histIdx < history.length - 1) {
       histIdx++;
       elements = JSON.parse(history[histIdx]);
-      selected = null; resizeHandle = null; dragOrigin = null;
+      selection.clear(); resizeHandle = null; dragOrigin = null;
       render();
     }
   }
@@ -157,14 +158,18 @@
     if (drawing) renderEl(ctx, drawing);
     ctx.restore();
 
-    if (selected) {
-      const el = elements.find(e => e.id === selected);
+    if (selection.size === 1) {
+      const el = elements.find(e => e.id === [...selection][0]);
       if (el) drawSelBox(el);
+    } else if (selection.size > 1) {
+      drawGroupSelBox();
     }
+
+    if (lasso) drawLasso();
     updateZoomLabel();
+    updateSelCount();
   }
 
-  // Only used for image-load callbacks that can fire in bursts
   function scheduleRender() {
     if (imgRafId) return;
     imgRafId = requestAnimationFrame(() => { imgRafId = null; render(); });
@@ -262,7 +267,6 @@
   function loadImg(src) {
     if (imgCache.has(src)) return imgCache.get(src);
     const img = new Image();
-    // RAF-batch image loads — many images can load in the same burst
     img.onload = () => { imgCache.set(src, img); scheduleRender(); };
     img.src = src;
     imgCache.set(src, img);
@@ -357,7 +361,7 @@
     return Math.hypot(px - ax - t * dx, py - ay - t * dy);
   }
 
-  /* ─── Selection box & resize handles ─────────────────────────────────────── */
+  /* ─── Single-element selection box & resize handles ──────────────────────── */
   const HANDLE_R   = 5;
   const HANDLE_HIT = 9;
 
@@ -474,6 +478,223 @@
     ctx.restore();
   }
 
+  /* ─── Multi-selection: union bounds, group handles, group sel box ─────────── */
+  function selectionBounds() {
+    const els = elements.filter(e => selection.has(e.id));
+    if (!els.length) return null;
+    const bs  = els.map(bounds);
+    const x   = Math.min(...bs.map(b => b.x));
+    const y   = Math.min(...bs.map(b => b.y));
+    const x2  = Math.max(...bs.map(b => b.x + Math.abs(b.w)));
+    const y2  = Math.max(...bs.map(b => b.y + Math.abs(b.h)));
+    return { x, y, w: x2 - x, h: y2 - y };
+  }
+
+  function getGroupHandles() {
+    const b = selectionBounds();
+    if (!b) return [];
+    const pad = 8 / vp.s;
+    const x1  = (b.x - pad) * vp.s + vp.x;
+    const y1  = (b.y - pad) * vp.s + vp.y;
+    const x2  = (b.x + b.w + pad) * vp.s + vp.x;
+    const y2  = (b.y + b.h + pad) * vp.s + vp.y;
+    const xm  = (x1 + x2) / 2;
+    const ym  = (y1 + y2) / 2;
+    return [
+      { id: 'nw', sx: x1, sy: y1 }, { id: 'n', sx: xm, sy: y1 }, { id: 'ne', sx: x2, sy: y1 },
+      { id: 'e',  sx: x2, sy: ym },
+      { id: 'se', sx: x2, sy: y2 }, { id: 's', sx: xm, sy: y2 }, { id: 'sw', sx: x1, sy: y2 },
+      { id: 'w',  sx: x1, sy: ym },
+    ];
+  }
+
+  function hitGroupHandle(mx, my) {
+    for (const h of getGroupHandles()) {
+      if (Math.hypot(mx - h.sx, my - h.sy) < HANDLE_HIT) return h.id;
+    }
+    return null;
+  }
+
+  function drawGroupSelBox() {
+    const b = selectionBounds();
+    if (!b) return;
+    const pad = 8 / vp.s;
+
+    ctx.save();
+
+    // Light per-element highlight
+    ctx.strokeStyle = 'rgba(124,58,237,0.45)';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([3, 3]);
+    elements.filter(e => selection.has(e.id)).forEach(el => {
+      if (el.type === 'line' || el.type === 'arrow') {
+        ctx.beginPath();
+        ctx.moveTo(el.x  * vp.s + vp.x, el.y  * vp.s + vp.y);
+        ctx.lineTo(el.x2 * vp.s + vp.x, el.y2 * vp.s + vp.y);
+        ctx.stroke();
+      } else {
+        const eb   = bounds(el);
+        const ipad = 4 / vp.s;
+        ctx.strokeRect(
+          (eb.x - ipad) * vp.s + vp.x,
+          (eb.y - ipad) * vp.s + vp.y,
+          (Math.abs(eb.w) + ipad * 2) * vp.s,
+          (Math.abs(eb.h) + ipad * 2) * vp.s,
+        );
+      }
+    });
+
+    // Union bounding box
+    const x1 = (b.x - pad) * vp.s + vp.x;
+    const y1 = (b.y - pad) * vp.s + vp.y;
+    const x2 = (b.x + b.w + pad) * vp.s + vp.x;
+    const y2 = (b.y + b.h + pad) * vp.s + vp.y;
+
+    ctx.strokeStyle = '#7c3aed';
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+
+    // Handles on union box
+    ctx.setLineDash([]);
+    getGroupHandles().forEach(h => {
+      ctx.beginPath();
+      ctx.arc(h.sx, h.sy, HANDLE_R, 0, Math.PI * 2);
+      ctx.fillStyle   = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#7c3aed';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+    });
+
+    ctx.restore();
+  }
+
+  function drawLasso() {
+    const sx1 = lasso.x1 * vp.s + vp.x;
+    const sy1 = lasso.y1 * vp.s + vp.y;
+    const sx2 = lasso.x2 * vp.s + vp.x;
+    const sy2 = lasso.y2 * vp.s + vp.y;
+    const lx  = Math.min(sx1, sx2), ly = Math.min(sy1, sy2);
+    const lw  = Math.abs(sx2 - sx1), lh = Math.abs(sy2 - sy1);
+    ctx.save();
+    ctx.fillStyle   = 'rgba(124,58,237,0.07)';
+    ctx.strokeStyle = '#7c3aed';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.fillRect  (lx, ly, lw, lh);
+    ctx.strokeRect(lx, ly, lw, lh);
+    ctx.restore();
+  }
+
+  function updateSelCount() {
+    const el = document.getElementById('canvasSelCount');
+    if (!el) return;
+    if (selection.size > 1) {
+      el.textContent  = selection.size + ' selected';
+      el.style.display = '';
+    } else {
+      el.style.display = 'none';
+    }
+  }
+
+  /* ─── Group resize (proportional scale of all selected elements) ──────────── */
+  function applyGroupResize(snaps, uBounds, handleId, ddx, ddy) {
+    let nx1 = uBounds.x, ny1 = uBounds.y;
+    let nx2 = uBounds.x + uBounds.w, ny2 = uBounds.y + uBounds.h;
+    switch (handleId) {
+      case 'nw': nx1 += ddx; ny1 += ddy; break;
+      case 'n':               ny1 += ddy; break;
+      case 'ne': nx2 += ddx; ny1 += ddy; break;
+      case 'e':  nx2 += ddx;              break;
+      case 'se': nx2 += ddx; ny2 += ddy; break;
+      case 's':               ny2 += ddy; break;
+      case 'sw': nx1 += ddx; ny2 += ddy; break;
+      case 'w':  nx1 += ddx;              break;
+    }
+    const newX = Math.min(nx1, nx2), newY = Math.min(ny1, ny2);
+    const newW = Math.max(5, Math.abs(nx2 - nx1));
+    const newH = Math.max(5, Math.abs(ny2 - ny1));
+    const scX  = uBounds.w > 1 ? newW / uBounds.w : 1;
+    const scY  = uBounds.h > 1 ? newH / uBounds.h : 1;
+
+    for (const [id, snap] of Object.entries(snaps)) {
+      const el = elements.find(e => e.id === id);
+      if (!el) continue;
+      const b = bounds(snap);
+      switch (snap.type) {
+        case 'rect': case 'ellipse': case 'image':
+          el.x = newX + (b.x - uBounds.x) * scX;
+          el.y = newY + (b.y - uBounds.y) * scY;
+          el.w = Math.max(5, b.w * scX);
+          el.h = Math.max(5, b.h * scY);
+          break;
+        case 'text':
+          el.fontSize = Math.max(8, Math.round((snap.fontSize || 20) * scY));
+          el.x        = newX + (b.x - uBounds.x) * scX;
+          el.y        = newY + (b.y - uBounds.y) * scY + el.fontSize;
+          break;
+        case 'pen':
+          el.points = snap.points.map(p => ({
+            x: newX + (p.x - uBounds.x) * scX,
+            y: newY + (p.y - uBounds.y) * scY,
+          }));
+          break;
+        case 'line': case 'arrow':
+          el.x  = newX + (snap.x  - uBounds.x) * scX;
+          el.y  = newY + (snap.y  - uBounds.y) * scY;
+          el.x2 = newX + (snap.x2 - uBounds.x) * scX;
+          el.y2 = newY + (snap.y2 - uBounds.y) * scY;
+          break;
+      }
+    }
+  }
+
+  /* ─── Copy / Paste / Select-all ──────────────────────────────────────────── */
+  function copySelected() {
+    if (!selection.size) return;
+    clipboard = elements
+      .filter(el => selection.has(el.id))
+      .map(el => JSON.parse(JSON.stringify(el)));
+  }
+
+  function pasteClipboard() {
+    if (!clipboard.length) return;
+    const off = 20 / vp.s;
+    selection.clear();
+    clipboard.forEach(snap => {
+      const clone = JSON.parse(JSON.stringify(snap));
+      clone.id = genId();
+      offsetEl(clone, off, off);
+      elements.push(clone);
+      selection.add(clone.id);
+    });
+    // Shift clipboard for staircase paste (like Figma)
+    clipboard = clipboard.map(snap => {
+      const c = JSON.parse(JSON.stringify(snap));
+      offsetEl(c, off, off);
+      return c;
+    });
+    pushHistory();
+    render();
+  }
+
+  function offsetEl(el, dx, dy) {
+    if (el.points) {
+      el.points = el.points.map(p => ({ x: p.x + dx, y: p.y + dy }));
+    } else {
+      el.x = (el.x || 0) + dx;
+      el.y = (el.y || 0) + dy;
+    }
+    if (el.x2 !== undefined) { el.x2 += dx; el.y2 += dy; }
+  }
+
+  function selectAll() {
+    selection.clear();
+    elements.forEach(el => selection.add(el.id));
+    render();
+  }
+
   /* ─── Events ──────────────────────────────────────────────────────────────── */
   function setupEvents() {
     canvas.addEventListener('mousedown',   onDown);
@@ -496,24 +717,46 @@
 
   function onKey(e) {
     if (!isOpen) return;
-    const mod = e.ctrlKey || e.metaKey;
+    const mod     = e.ctrlKey || e.metaKey;
     const focused = document.activeElement;
     const inInput = focused === textArea || focused === document.getElementById('drawingTitle');
 
     if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
     if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
-    if (mod && e.key === 'd' && selected && !inInput) {
+
+    if (mod && e.key === 'a' && !inInput) { e.preventDefault(); selectAll(); return; }
+    if (mod && e.key === 'c' && !inInput && selection.size) { e.preventDefault(); copySelected(); return; }
+    if (mod && e.key === 'v' && !inInput && clipboard.length) { e.preventDefault(); pasteClipboard(); return; }
+
+    if (mod && e.key === 'd' && !inInput && selection.size) {
       e.preventDefault(); execCtxCmd('duplicate'); return;
     }
-    if ((e.key === 'Delete' || e.key === 'Backspace') && selected && !inInput) {
-      elements = elements.filter(el => el.id !== selected);
-      selected = null; pushHistory(); render(); return;
+
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selection.size && !inInput) {
+      elements = elements.filter(el => !selection.has(el.id));
+      selection.clear(); pushHistory(); render(); return;
     }
+
     if (e.key === 'Escape') {
       hideCtxMenu();
-      selected = null; resizeHandle = null; dragOrigin = null;
+      selection.clear(); resizeHandle = null; dragOrigin = null; lasso = null;
       finishText(); render(); return;
     }
+
+    // Arrow-key nudge (1px; 10px with Shift)
+    if (!inInput && selection.size &&
+        (e.key === 'ArrowUp' || e.key === 'ArrowDown' || e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+      e.preventDefault();
+      const d  = e.shiftKey ? 10 : 1;
+      const dx = e.key === 'ArrowLeft' ? -d : e.key === 'ArrowRight' ? d : 0;
+      const dy = e.key === 'ArrowUp'   ? -d : e.key === 'ArrowDown'  ? d : 0;
+      elements.filter(el => selection.has(el.id)).forEach(el => {
+        const snap = JSON.parse(JSON.stringify(el));
+        moveEl(el, snap, dx, dy);
+      });
+      pushHistory(); render(); return;
+    }
+
     if (e.key === 'f' && !inInput && !mod) { toggleFullscreen(); return; }
     if (e.key === ' ' && !inInput) { e.preventDefault(); spaceDown = true; canvas.style.cursor = 'grab'; }
 
@@ -523,7 +766,7 @@
     }
   }
 
-  /* ─── Double-click: select or re-edit text ────────────────────────────────── */
+  /* ─── Double-click: re-edit text ──────────────────────────────────────────── */
   function onDblClick(e) {
     if (e.button !== 0 || spaceDown) return;
     const { mx, my } = clientPos(e);
@@ -535,22 +778,21 @@
     if (!el) return;
 
     if (el.type === 'text') {
-      // Remove the element and open its content for editing
       finishText();
       elements = elements.filter(e => e.id !== id);
-      selected = null;
+      selection.clear();
       activeStyle.fontSize = el.fontSize || 20;
       activeStyle.stroke   = el.stroke   || activeStyle.stroke;
       selectTool('text');
       const sx = el.x * vp.s + vp.x;
       const sy = el.y * vp.s + vp.y;
       placeText(sx, sy, el.x, el.y);
-      // Pre-fill after placeText resets value
       textArea.value = el.text || '';
       textArea.dispatchEvent(new Event('input'));
     } else {
       finishText();
-      selected = id;
+      selection.clear();
+      selection.add(id);
       selectTool('select');
       syncToolbarToElement(el);
       render();
@@ -565,10 +807,11 @@
     const { x: dx, y: dy } = toDoc(mx, my);
     const id = hitTest(dx, dy);
 
-    if (!id) { hideCtxMenu(); return; }
+    if (!id && !selection.size) { hideCtxMenu(); return; }
 
-    if (selected !== id) {
-      selected = id;
+    if (id && !selection.has(id)) {
+      selection.clear();
+      selection.add(id);
       const el = elements.find(el => el.id === id);
       if (el) syncToolbarToElement(el);
       render();
@@ -594,35 +837,76 @@
 
   function execCtxCmd(cmd) {
     hideCtxMenu();
-    if (!selected) return;
-    const idx = elements.findIndex(e => e.id === selected);
-    if (idx === -1) return;
+    if (!selection.size) return;
 
     switch (cmd) {
+      case 'copy':
+        copySelected();
+        break;
+
       case 'delete':
-        elements.splice(idx, 1);
-        selected = null;
+        elements = elements.filter(el => !selection.has(el.id));
+        selection.clear();
         pushHistory(); render();
         break;
+
       case 'duplicate': {
-        const clone = JSON.parse(JSON.stringify(elements[idx]));
-        clone.id = genId();
-        const off = 20 / vp.s;
-        if (clone.points) clone.points = clone.points.map(p => ({ x: p.x + off, y: p.y + off }));
-        else { clone.x = (clone.x || 0) + off; clone.y = (clone.y || 0) + off; }
-        if (clone.x2 !== undefined) { clone.x2 += off; clone.y2 += off; }
-        elements.push(clone);
-        selected = clone.id;
+        const off    = 20 / vp.s;
+        const newIds = [];
+        elements.filter(el => selection.has(el.id)).forEach(orig => {
+          const clone = JSON.parse(JSON.stringify(orig));
+          clone.id    = genId();
+          offsetEl(clone, off, off);
+          elements.push(clone);
+          newIds.push(clone.id);
+        });
+        selection.clear();
+        newIds.forEach(id => selection.add(id));
         pushHistory(); render();
         break;
       }
-      case 'front':
-        elements.push(elements.splice(idx, 1)[0]);
+
+      case 'front': {
+        const selEls = elements.filter(el => selection.has(el.id));
+        elements     = [...elements.filter(el => !selection.has(el.id)), ...selEls];
         pushHistory(); render();
         break;
-      case 'back':
-        elements.unshift(elements.splice(idx, 1)[0]);
+      }
+
+      case 'forward': {
+        // Move each selected element one step toward front, preserving relative order among selected
+        const arr = [...elements];
+        for (let i = arr.length - 2; i >= 0; i--) {
+          if (selection.has(arr[i].id) && !selection.has(arr[i + 1].id)) {
+            [arr[i], arr[i + 1]] = [arr[i + 1], arr[i]];
+          }
+        }
+        elements = arr;
         pushHistory(); render();
+        break;
+      }
+
+      case 'backward': {
+        const arr = [...elements];
+        for (let i = 1; i < arr.length; i++) {
+          if (selection.has(arr[i].id) && !selection.has(arr[i - 1].id)) {
+            [arr[i], arr[i - 1]] = [arr[i - 1], arr[i]];
+          }
+        }
+        elements = arr;
+        pushHistory(); render();
+        break;
+      }
+
+      case 'back': {
+        const selEls = elements.filter(el => selection.has(el.id));
+        elements     = [...selEls, ...elements.filter(el => !selection.has(el.id))];
+        pushHistory(); render();
+        break;
+      }
+
+      case 'select-all':
+        selectAll();
         break;
     }
   }
@@ -646,7 +930,6 @@
 
     document.addEventListener('fullscreenchange', () => {
       updateFullscreenBtn();
-      // Let the browser finish applying fullscreen layout before measuring
       requestAnimationFrame(() => { resize(); render(); });
     });
   }
@@ -668,9 +951,7 @@
     const svg = btn.querySelector('svg');
     if (!svg) return;
     svg.innerHTML = isFs
-      // compress icon (exit fullscreen)
       ? `<polyline points="8 3 3 3 3 8"/><polyline points="21 3 16 3 16 8"/><polyline points="3 16 3 21 8 21"/><polyline points="16 21 21 21 21 16"/>`
-      // expand icon
       : `<polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/>`;
   }
 
@@ -699,26 +980,75 @@
     const { x: dx, y: dy } = toDoc(mx, my);
 
     if (activeTool === 'select') {
-      resizeHandle = null; dragOrigin = null;
+      resizeHandle = null; dragOrigin = null; lasso = null;
 
-      if (selected) {
-        const selEl = elements.find(el => el.id === selected);
+      // Check group resize handles first (multi-selection)
+      if (selection.size > 1) {
+        const h = hitGroupHandle(mx, my);
+        if (h) {
+          const snaps = {};
+          [...selection].forEach(id => {
+            const el = elements.find(e => e.id === id);
+            if (el) snaps[id] = JSON.parse(JSON.stringify(el));
+          });
+          resizeHandle = { handleId: h, originDx: dx, originDy: dy, snaps, uBounds: selectionBounds(), isGroup: true };
+          return;
+        }
+      }
+
+      // Single-element resize handles
+      if (selection.size === 1) {
+        const selId = [...selection][0];
+        const selEl = elements.find(el => el.id === selId);
         if (selEl) {
           const h = hitHandle(selEl, mx, my);
           if (h) {
-            resizeHandle = { handleId: h, originDx: dx, originDy: dy, snap: JSON.parse(JSON.stringify(selEl)) };
+            resizeHandle = { handleId: h, originDx: dx, originDy: dy, snap: JSON.parse(JSON.stringify(selEl)), isGroup: false };
             return;
           }
         }
       }
 
       const id = hitTest(dx, dy);
-      selected = id;
+
       if (id) {
-        const el = elements.find(el => el.id === id);
-        dragOrigin = { dx, dy, snap: JSON.parse(JSON.stringify(el)) };
-        syncToolbarToElement(el);
+        if (e.shiftKey) {
+          // Shift+click toggles element in/out of selection — no drag
+          if (selection.has(id)) selection.delete(id);
+          else selection.add(id);
+          render();
+          return;
+        }
+
+        // Click on unselected element → replace selection
+        if (!selection.has(id)) {
+          selection.clear();
+          selection.add(id);
+          const el = elements.find(el => el.id === id);
+          if (el) syncToolbarToElement(el);
+        }
+
+        // Start drag for all selected
+        if (selection.size > 1) {
+          const snaps = {};
+          [...selection].forEach(sid => {
+            const el = elements.find(e => e.id === sid);
+            if (el) snaps[sid] = JSON.parse(JSON.stringify(el));
+          });
+          dragOrigin = { dx, dy, snaps, isGroup: true };
+        } else {
+          const el = elements.find(el => el.id === id);
+          if (el) {
+            dragOrigin = { dx, dy, snap: JSON.parse(JSON.stringify(el)), isGroup: false };
+            syncToolbarToElement(el);
+          }
+        }
+      } else {
+        // Empty space — clear selection (unless shift) and start lasso
+        if (!e.shiftKey) selection.clear();
+        lasso = { x1: dx, y1: dy, x2: dx, y2: dy, additive: e.shiftKey };
       }
+
       render();
       return;
     }
@@ -738,12 +1068,18 @@
   function onMove(e) {
     const { mx, my } = clientPos(e);
 
-    // Hover cursor for resize handles
-    if (!isDown && activeTool === 'select' && selected && !spaceDown) {
-      const el = elements.find(el => el.id === selected);
-      if (el) {
-        const h = hitHandle(el, mx, my);
+    // Hover cursor
+    if (!isDown && activeTool === 'select' && !spaceDown) {
+      if (selection.size > 1) {
+        const h = hitGroupHandle(mx, my);
         canvas.style.cursor = h ? handleCursor(h) : 'default';
+      } else if (selection.size === 1) {
+        const selId = [...selection][0];
+        const el    = elements.find(el => el.id === selId);
+        if (el) {
+          const h = hitHandle(el, mx, my);
+          canvas.style.cursor = h ? handleCursor(h) : 'default';
+        }
       }
     }
 
@@ -752,25 +1088,49 @@
     if (panOrigin) {
       vp.x = panOrigin.vx + mx - panOrigin.mx;
       vp.y = panOrigin.vy + my - panOrigin.my;
-      render(); // immediate — pan must feel instant
+      render();
       return;
     }
 
     const { x: dx, y: dy } = toDoc(mx, my);
 
-    if (activeTool === 'select' && resizeHandle && selected) {
-      const ddx = dx - resizeHandle.originDx, ddy = dy - resizeHandle.originDy;
-      const el  = elements.find(e => e.id === selected);
-      if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy);
-      render();
-      return;
-    }
+    if (activeTool === 'select') {
+      if (lasso) {
+        lasso.x2 = dx; lasso.y2 = dy;
+        render();
+        return;
+      }
 
-    if (activeTool === 'select' && dragOrigin && selected) {
-      const ddx = dx - dragOrigin.dx, ddy = dy - dragOrigin.dy;
-      const el  = elements.find(e => e.id === selected);
-      if (el) moveEl(el, dragOrigin.snap, ddx, ddy);
-      render();
+      if (resizeHandle) {
+        const ddx = dx - resizeHandle.originDx;
+        const ddy = dy - resizeHandle.originDy;
+        if (resizeHandle.isGroup) {
+          applyGroupResize(resizeHandle.snaps, resizeHandle.uBounds, resizeHandle.handleId, ddx, ddy);
+        } else {
+          const selId = [...selection][0];
+          const el    = elements.find(e => e.id === selId);
+          if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy);
+        }
+        render();
+        return;
+      }
+
+      if (dragOrigin) {
+        const ddx = dx - dragOrigin.dx;
+        const ddy = dy - dragOrigin.dy;
+        if (dragOrigin.isGroup) {
+          Object.entries(dragOrigin.snaps).forEach(([id, snap]) => {
+            const el = elements.find(e => e.id === id);
+            if (el) moveEl(el, snap, ddx, ddy);
+          });
+        } else {
+          const selId = [...selection][0];
+          const el    = elements.find(e => e.id === selId);
+          if (el) moveEl(el, dragOrigin.snap, ddx, ddy);
+        }
+        render();
+        return;
+      }
       return;
     }
 
@@ -794,8 +1154,36 @@
     isDown = false;
 
     if (panOrigin) { panOrigin = null; syncCursor(); return; }
-    if (activeTool === 'select' && resizeHandle) { pushHistory(); resizeHandle = null; syncCursor(); return; }
-    if (activeTool === 'select' && dragOrigin)   { pushHistory(); dragOrigin   = null; return; }
+
+    if (activeTool === 'select') {
+      if (lasso) {
+        // Select all elements whose bounds overlap with the lasso rect
+        const x1 = Math.min(lasso.x1, lasso.x2);
+        const y1 = Math.min(lasso.y1, lasso.y2);
+        const x2 = Math.max(lasso.x1, lasso.x2);
+        const y2 = Math.max(lasso.y1, lasso.y2);
+
+        if (!lasso.additive) selection.clear();
+
+        // Only select if lasso has meaningful size (prevents accidental select-all on click)
+        if (Math.abs(x2 - x1) > 2 || Math.abs(y2 - y1) > 2) {
+          elements.forEach(el => {
+            const b   = bounds(el);
+            const ex1 = b.x, ey1 = b.y;
+            const ex2 = b.x + Math.abs(b.w), ey2 = b.y + Math.abs(b.h);
+            if (ex2 >= x1 && ex1 <= x2 && ey2 >= y1 && ey1 <= y2) selection.add(el.id);
+          });
+        }
+
+        lasso = null;
+        render();
+        return;
+      }
+
+      if (resizeHandle) { pushHistory(); resizeHandle = null; syncCursor(); return; }
+      if (dragOrigin)   { pushHistory(); dragOrigin   = null; return; }
+      return;
+    }
 
     if (!drawing) return;
     const el = drawing;
@@ -806,8 +1194,9 @@
     if ((el.type === 'line' || el.type === 'arrow') && Math.abs(el.x2 - el.x) < 3 && Math.abs(el.y2 - el.y) < 3) { render(); return; }
 
     elements.push(el);
-    selected = el.id;      // auto-select the just-drawn element
-    selectTool('select');  // switch back to select tool
+    selection.clear();
+    selection.add(el.id);
+    selectTool('select');
     pushHistory();
     render();
   }
@@ -826,14 +1215,14 @@
       vp.x -= e.deltaX;
       vp.y -= e.deltaY;
     }
-    render(); // immediate — zoom must feel instant, no RAF delay
+    render();
   }
 
   function eraseAt(dx, dy) {
     const id = hitTest(dx, dy);
     if (id) {
       elements = elements.filter(e => e.id !== id);
-      if (selected === id) selected = null;
+      selection.delete(id);
       pushHistory();
       render();
     }
@@ -870,7 +1259,7 @@
     textArea.style.fontSize   = fs + 'px';
     textArea.style.lineHeight = lineH + 'px';
     textArea.style.color      = activeStyle.stroke;
-    textArea.style.width      = '4px';       // start minimal, grow() expands it
+    textArea.style.width      = '4px';
     textArea.style.height     = lineH + 'px';
     textArea.dataset.dx       = dx;
     textArea.dataset.dy       = dy;
@@ -884,10 +1273,8 @@
       textArea.style.width  = Math.max(2, textArea.scrollWidth + 4) + 'px';
     }
 
-    textArea.oninput = () => {
-      grow(); // resize the textarea to fit content — no canvas re-render needed while typing
-    };
-    textArea.onblur = () => {
+    textArea.oninput = () => { grow(); };
+    textArea.onblur  = () => {
       if (textArea.value.trim()) commitText();
       else finishText();
       render();
@@ -902,16 +1289,8 @@
       }
     };
 
-    // Cancel any previous pending focus RAF before scheduling a new one
     if (textFocusRaf) { cancelAnimationFrame(textFocusRaf); textFocusRaf = null; }
     textFocusRaf = requestAnimationFrame(() => { textFocusRaf = null; textArea.focus(); });
-  }
-
-  function mkTextPreview(dx, dy) {
-    const fs = parseFloat(textArea.dataset.fontSize) || activeStyle.fontSize;
-    return { id: '__txt__', type: 'text', x: dx, y: dy, text: textArea.value,
-             stroke: textArea.dataset.stroke || activeStyle.stroke,
-             fontSize: fs, fill: 'none', width: 1, dash: false, opacity: 0.6 };
   }
 
   function commitText() {
@@ -929,7 +1308,6 @@
   }
 
   function finishText() {
-    // Cancel pending focus RAF — avoids focusing a hidden textarea
     if (textFocusRaf) { cancelAnimationFrame(textFocusRaf); textFocusRaf = null; }
     drawing = null;
     if (!textArea) return;
@@ -975,11 +1353,10 @@
     }
   }
 
+  // Apply style props to ALL selected elements
   function applyToSelected(props) {
-    if (!selected) return;
-    const el = elements.find(e => e.id === selected);
-    if (!el) return;
-    Object.assign(el, props);
+    if (!selection.size) return;
+    elements.filter(el => selection.has(el.id)).forEach(el => Object.assign(el, props));
     pushHistory();
     render();
   }
@@ -994,7 +1371,7 @@
     for (const item of Array.from(items)) {
       if (!item.type.startsWith('image/')) continue;
       e.preventDefault();
-      const blob = item.getAsFile();
+      const blob   = item.getAsFile();
       const reader = new FileReader();
       reader.onload = async (ev) => {
         const { dataUrl, w, h } = await compressImg(ev.target.result, 1000);
@@ -1134,7 +1511,7 @@
     document.getElementById('canvasRedo') ?.addEventListener('click', redo);
     document.getElementById('canvasClear')?.addEventListener('click', () => {
       if (!elements.length) return;
-      elements = []; selected = null; pushHistory(); render();
+      elements = []; selection.clear(); pushHistory(); render();
     });
     document.getElementById('canvasZoomIn')   ?.addEventListener('click', () => zoom(1.25));
     document.getElementById('canvasZoomOut')  ?.addEventListener('click', () => zoom(0.8));
