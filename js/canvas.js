@@ -1068,18 +1068,20 @@
   function onMove(e) {
     const { mx, my } = clientPos(e);
 
-    // Hover cursor
+    // Hover cursor — show resize handles on selected, 'move' when over any element
     if (!isDown && activeTool === 'select' && !spaceDown) {
+      const { x: hx, y: hy } = toDoc(mx, my);
+      const hovered           = hitTest(hx, hy);
       if (selection.size > 1) {
         const h = hitGroupHandle(mx, my);
-        canvas.style.cursor = h ? handleCursor(h) : 'default';
+        canvas.style.cursor = h ? handleCursor(h) : (hovered ? 'move' : 'default');
       } else if (selection.size === 1) {
         const selId = [...selection][0];
         const el    = elements.find(el => el.id === selId);
-        if (el) {
-          const h = hitHandle(el, mx, my);
-          canvas.style.cursor = h ? handleCursor(h) : 'default';
-        }
+        const h     = el ? hitHandle(el, mx, my) : null;
+        canvas.style.cursor = h ? handleCursor(h) : (hovered ? 'move' : 'default');
+      } else {
+        canvas.style.cursor = hovered ? 'move' : 'default';
       }
     }
 
@@ -1246,8 +1248,11 @@
   /* ─── Text tool ───────────────────────────────────────────────────────────── */
   function placeText(mx, my, dx, dy) {
     if (textArea.style.display === 'block') {
+      // Clicking away from an open textarea: commit if content, cancel otherwise,
+      // then return — don't open a second textarea (clicking away = done with text).
       if (textArea.value.trim()) commitText();
-      else finishText();
+      else { finishText(); selectTool('select'); render(); }
+      return;
     }
 
     const fs    = activeStyle.fontSize * vp.s;
@@ -1275,18 +1280,19 @@
 
     textArea.oninput = () => { grow(); };
     textArea.onblur  = () => {
+      // Clicking outside (blur) commits or cancels; commitText handles render + tool-switch.
       if (textArea.value.trim()) commitText();
-      else finishText();
-      render();
+      else { finishText(); selectTool('select'); render(); }
     };
     textArea.onkeydown = e => {
-      if (e.key === 'Escape') { e.preventDefault(); finishText(); render(); return; }
-      if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.key === 'Escape') {
         e.preventDefault();
+        // Escape with content → commit; empty → cancel. Both switch to select.
         if (textArea.value.trim()) commitText();
-        else finishText();
-        render();
+        else { finishText(); selectTool('select'); render(); }
+        return;
       }
+      // Enter: natural textarea newline — no e.preventDefault(), just let it grow.
     };
 
     if (textFocusRaf) { cancelAnimationFrame(textFocusRaf); textFocusRaf = null; }
@@ -1298,12 +1304,19 @@
     const dy = parseFloat(textArea.dataset.dy);
     const fs = parseFloat(textArea.dataset.fontSize) || activeStyle.fontSize;
     if (isNaN(dx) || isNaN(dy)) { finishText(); return; }
-    elements.push({ id: genId(), type: 'text', x: dx, y: dy,
-                    text: textArea.value.trim(),
-                    stroke: textArea.dataset.stroke || activeStyle.stroke,
-                    fontSize: fs, fill: 'none', width: 1, dash: false, opacity: 1 });
+    const newEl = {
+      id: genId(), type: 'text', x: dx, y: dy,
+      text: textArea.value.trim(),
+      stroke: textArea.dataset.stroke || activeStyle.stroke,
+      fontSize: fs, fill: 'none', width: 1, dash: false, opacity: 1,
+    };
+    elements.push(newEl);
     pushHistory();
     finishText();
+    // Auto-select the new element and switch back to select tool (mirrors drawing tools).
+    selection.clear();
+    selection.add(newEl.id);
+    selectTool('select');
     render();
   }
 
