@@ -1682,7 +1682,6 @@ pre[class*="language-"] {
   white-space: pre;
   box-sizing: content-box;
   caret-color: currentColor;
-  box-shadow: 0 0 0 1.5px rgba(124,58,237,.75), 0 0 0 4px rgba(124,58,237,.12);
 }
 .canvas-text-input::selection {
   background: rgba(124,58,237,.35);

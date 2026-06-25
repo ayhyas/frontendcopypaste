@@ -166,14 +166,25 @@
       drawGroupSelBox();
     }
 
-    // While the textarea is open: render live text on canvas + bounding box
-    if (textPreview) {
-      ctx.save();
-      ctx.translate(vp.x, vp.y);
-      ctx.scale(vp.s, vp.s);
-      renderEl(ctx, textPreview);
-      ctx.restore();
-      drawSelBox(textPreview);
+    // While textarea is open: draw a dashed outline tracking the textarea's
+    // actual DOM rect — single rendering path, no double-text, perfect alignment.
+    if (textPreview && textArea.style.display === 'block') {
+      const ta  = textArea.getBoundingClientRect();
+      const cv  = canvas.getBoundingClientRect();
+      if (ta.width > 0 && ta.height > 0) {
+        const pad = 6;
+        const tx  = ta.left - cv.left - pad;
+        const ty  = ta.top  - cv.top  - pad;
+        const tw  = Math.max(ta.width  + pad * 2, 20);
+        const th  = Math.max(ta.height + pad * 2, 20);
+        ctx.save();
+        ctx.strokeStyle = '#7c3aed';
+        ctx.lineWidth   = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(tx, ty, tw, th);
+        ctx.setLineDash([]);
+        ctx.restore();
+      }
     }
 
     if (lasso) drawLasso();
@@ -1335,21 +1346,13 @@
     textArea.dataset.stroke   = activeStyle.stroke;
     textArea.value            = '';
 
-    // Live canvas preview — keeps text + bounding box in sync while typing
-    textPreview = {
-      id: '__preview__', type: 'text',
-      x: dx, y: dy,
-      text: '',
-      fontSize: activeStyle.fontSize,
-      stroke: activeStyle.stroke,
-      fill: 'none', width: 1, dash: false, opacity: 1,
-    };
+    textPreview = { x: dx, y: dy };  // truthy flag — render() reads textarea DOM for the box
 
     function grow() {
       textArea.style.height = 'auto';
       textArea.style.height = Math.max(lineH, textArea.scrollHeight) + 'px';
       textArea.style.width  = Math.max(2, textArea.scrollWidth + 4) + 'px';
-      if (textPreview) { textPreview.text = textArea.value; render(); }
+      if (textPreview) scheduleRender();
     }
 
     textArea.oninput = () => { grow(); };
