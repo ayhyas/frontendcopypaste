@@ -1668,7 +1668,7 @@ pre[class*="language-"] {
 .canvas-text-input {
   position: absolute;
   background: transparent;
-  border: 1px dashed rgba(124,58,237,.6);
+  border: none;
   border-radius: 3px;
   padding: 0;
   margin: 0;
@@ -1679,8 +1679,14 @@ pre[class*="language-"] {
   z-index: 20;
   overflow: hidden;
   word-break: keep-all;
-  white-space: nowrap;
+  white-space: pre;
   box-sizing: content-box;
+  caret-color: currentColor;
+  box-shadow: 0 0 0 1.5px rgba(124,58,237,.75), 0 0 0 4px rgba(124,58,237,.12);
+}
+.canvas-text-input::selection {
+  background: rgba(124,58,237,.35);
+  color: inherit;
 }
 
 /* ─── Canvas footer ────────────────────────────────────────────────────────── */

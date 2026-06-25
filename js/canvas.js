@@ -401,7 +401,7 @@
               p1: 'crosshair', p2: 'crosshair' })[hid] || 'default';
   }
 
-  function applyResize(el, snap, handleId, ddx, ddy) {
+  function applyResize(el, snap, handleId, ddx, ddy, shiftKey) {
     if (handleId === 'p1') { el.x  = snap.x  + ddx; el.y  = snap.y  + ddy; return; }
     if (handleId === 'p2') { el.x2 = snap.x2 + ddx; el.y2 = snap.y2 + ddy; return; }
 
@@ -417,6 +417,40 @@
       case 's':               ny2 += ddy; break;
       case 'sw': nx1 += ddx; ny2 += ddy; break;
       case 'w':  nx1 += ddx;             break;
+    }
+
+    // Corner resize: lock aspect ratio for images always, for others when Shift held
+    const isCorner   = ['nw', 'ne', 'sw', 'se'].includes(handleId);
+    const lockAspect = isCorner && (shiftKey || el.type === 'image');
+
+    if (lockAspect) {
+      const origW  = Math.abs(b.w) || 1;
+      const origH  = Math.abs(b.h) || 1;
+      const aspect = origW / origH;
+      const rawW   = Math.abs(nx2 - nx1);
+      const rawH   = Math.abs(ny2 - ny1);
+
+      // Follow whichever dimension proportionally changed more
+      const dw = Math.abs(rawW - origW) / origW;
+      const dh = Math.abs(rawH - origH) / origH;
+      let finalW, finalH;
+      if (dw >= dh) {
+        finalW = Math.max(5, rawW);
+        finalH = Math.max(5, finalW / aspect);
+      } else {
+        finalH = Math.max(5, rawH);
+        finalW = Math.max(5, finalH * aspect);
+      }
+
+      // Anchor the fixed (opposite) corner and recompute moving edges
+      const ox1 = Math.min(b.x, b.x + b.w), oy1 = Math.min(b.y, b.y + b.h);
+      const ox2 = Math.max(b.x, b.x + b.w), oy2 = Math.max(b.y, b.y + b.h);
+      switch (handleId) {
+        case 'nw': nx1 = ox2 - finalW; nx2 = ox2; ny1 = oy2 - finalH; ny2 = oy2; break;
+        case 'ne': nx1 = ox1; nx2 = ox1 + finalW; ny1 = oy2 - finalH; ny2 = oy2; break;
+        case 'se': nx1 = ox1; nx2 = ox1 + finalW; ny1 = oy1; ny2 = oy1 + finalH; break;
+        case 'sw': nx1 = ox2 - finalW; nx2 = ox2; ny1 = oy1; ny2 = oy1 + finalH; break;
+      }
     }
 
     const newX = Math.min(nx1, nx2), newY = Math.min(ny1, ny2);
@@ -599,7 +633,7 @@
   }
 
   /* ─── Group resize (proportional scale of all selected elements) ──────────── */
-  function applyGroupResize(snaps, uBounds, handleId, ddx, ddy) {
+  function applyGroupResize(snaps, uBounds, handleId, ddx, ddy, shiftKey) {
     let nx1 = uBounds.x, ny1 = uBounds.y;
     let nx2 = uBounds.x + uBounds.w, ny2 = uBounds.y + uBounds.h;
     switch (handleId) {
@@ -612,6 +646,24 @@
       case 'sw': nx1 += ddx; ny2 += ddy; break;
       case 'w':  nx1 += ddx;              break;
     }
+
+    // Shift + corner drag: proportionally lock the whole group's aspect ratio
+    if (shiftKey && ['nw', 'ne', 'sw', 'se'].includes(handleId)) {
+      const origW  = uBounds.w || 1, origH = uBounds.h || 1;
+      const aspect = origW / origH;
+      const rawW   = Math.abs(nx2 - nx1), rawH = Math.abs(ny2 - ny1);
+      const dw = Math.abs(rawW - origW) / origW, dh = Math.abs(rawH - origH) / origH;
+      let finalW, finalH;
+      if (dw >= dh) { finalW = Math.max(5, rawW); finalH = Math.max(5, finalW / aspect); }
+      else          { finalH = Math.max(5, rawH); finalW = Math.max(5, finalH * aspect); }
+      switch (handleId) {
+        case 'nw': nx1 = nx2 - finalW; ny1 = ny2 - finalH; break;
+        case 'ne': nx2 = nx1 + finalW; ny1 = ny2 - finalH; break;
+        case 'se': nx2 = nx1 + finalW; ny2 = ny1 + finalH; break;
+        case 'sw': nx1 = nx2 - finalW; ny2 = ny1 + finalH; break;
+      }
+    }
+
     const newX = Math.min(nx1, nx2), newY = Math.min(ny1, ny2);
     const newW = Math.max(5, Math.abs(nx2 - nx1));
     const newH = Math.max(5, Math.abs(ny2 - ny1));
@@ -1107,11 +1159,11 @@
         const ddx = dx - resizeHandle.originDx;
         const ddy = dy - resizeHandle.originDy;
         if (resizeHandle.isGroup) {
-          applyGroupResize(resizeHandle.snaps, resizeHandle.uBounds, resizeHandle.handleId, ddx, ddy);
+          applyGroupResize(resizeHandle.snaps, resizeHandle.uBounds, resizeHandle.handleId, ddx, ddy, e.shiftKey);
         } else {
           const selId = [...selection][0];
           const el    = elements.find(e => e.id === selId);
-          if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy);
+          if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy, e.shiftKey);
         }
         render();
         return;
@@ -1256,15 +1308,15 @@
     }
 
     const fs    = activeStyle.fontSize * vp.s;
-    const lineH = fs * 1.35;
+    const lineH = fs * 1.4;  // matches canvas drawText line height
 
     textArea.style.display    = 'block';
     textArea.style.left       = mx + 'px';
-    textArea.style.top        = (my - fs * 0.82) + 'px';
+    textArea.style.top        = (my - fs) + 'px';  // baseline - fontSize = top of text cell
     textArea.style.fontSize   = fs + 'px';
     textArea.style.lineHeight = lineH + 'px';
     textArea.style.color      = activeStyle.stroke;
-    textArea.style.width      = '4px';
+    textArea.style.width      = '2px';
     textArea.style.height     = lineH + 'px';
     textArea.dataset.dx       = dx;
     textArea.dataset.dy       = dy;
