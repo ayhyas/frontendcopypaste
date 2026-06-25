@@ -56,6 +56,7 @@ const api = (() => {
       },
       create: (title, elements, preview, workspaceId) =>
         request('/api/drawings', { method: 'POST', body: JSON.stringify({ title, elements, preview, workspaceId }) }),
+      rename: (id, title) => request(`/api/drawings/${id}`, { method: 'PATCH', body: JSON.stringify({ title }) }),
       remove: (id) => request(`/api/drawings/${id}`, { method: 'DELETE' }),
     },
     resources: {

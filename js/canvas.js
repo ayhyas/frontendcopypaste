@@ -30,6 +30,9 @@
   let imgRafId     = null;
   let textFocusRaf = null;
 
+  let lastMx    = 0, lastMy = 0, lastShift = false;  // last pointer position (canvas-relative)
+  let autoPanId = null;                               // rAF id for edge-scroll loop
+
   const imgCache   = new Map();
 
   /* ─── Public API ──────────────────────────────────────────────────────────── */
@@ -1043,6 +1046,13 @@
     if (activeTool === 'text') return;
     hideCtxMenu();
     isDown = true;
+    document.addEventListener('mousemove', onDocMove);
+    // { once: true } so it auto-removes; also handles mouseup outside the canvas element
+    document.addEventListener('mouseup', function onceUp() {
+      document.removeEventListener('mousemove', onDocMove);
+      stopAutoPan();
+      if (isDown) onUp();  // out-of-canvas release — canvas listener won't fire
+    }, { once: true });
     const { mx, my } = clientPos(e);
 
     if (spaceDown || e.button === 1) {
@@ -1138,9 +1148,85 @@
       drawing = { ...base, type: activeTool, x: dx, y: dy, x2: dx, y2: dy };
   }
 
+  /* ─── Edge-scroll auto-pan ───────────────────────────────────────────────── */
+  function autoPanVel(pos, size) {
+    // Returns signed px/frame: negative = scroll toward origin, positive = toward far edge.
+    // Ramps from 0 at the inner threshold to MAX at the edge, then continues outside.
+    const EDGE = 50, MAX = 14;
+    if (pos < -EDGE)       return -MAX * 2;
+    if (pos < 0)           return -MAX * (1 + (-pos) / EDGE);
+    if (pos > size + EDGE) return  MAX * 2;
+    if (pos > size)        return  MAX * (1 + (pos - size) / EDGE);
+    if (pos < EDGE)        return -MAX * ((EDGE - pos) / EDGE);
+    if (pos > size - EDGE) return  MAX * ((pos - (size - EDGE)) / EDGE);
+    return 0;
+  }
+
+  // Shared operation updater — called by both onMove and tickAutoPan.
+  // skipPen prevents adding duplicate pen points when panning without mouse movement.
+  function applyPointerOp(mx, my, shiftKey, skipPen) {
+    const { x: dx, y: dy } = toDoc(mx, my);
+    if (activeTool === 'select') {
+      if (lasso) { lasso.x2 = dx; lasso.y2 = dy; return; }
+      if (resizeHandle) {
+        const ddx = dx - resizeHandle.originDx, ddy = dy - resizeHandle.originDy;
+        if (resizeHandle.isGroup)
+          applyGroupResize(resizeHandle.snaps, resizeHandle.uBounds, resizeHandle.handleId, ddx, ddy, shiftKey);
+        else {
+          const el = elements.find(e => e.id === [...selection][0]);
+          if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy, shiftKey);
+        }
+        return;
+      }
+      if (dragOrigin) {
+        const ddx = dx - dragOrigin.dx, ddy = dy - dragOrigin.dy;
+        if (dragOrigin.isGroup)
+          Object.entries(dragOrigin.snaps).forEach(([id, snap]) => {
+            const el = elements.find(e => e.id === id); if (el) moveEl(el, snap, ddx, ddy);
+          });
+        else {
+          const el = elements.find(e => e.id === [...selection][0]);
+          if (el) moveEl(el, dragOrigin.snap, ddx, ddy);
+        }
+      }
+      return;
+    }
+    if (!drawing || skipPen) return;
+    if      (drawing.type === 'pen')                                { drawing.points.push({ x: dx, y: dy }); }
+    else if (drawing.type === 'rect' || drawing.type === 'ellipse') { drawing.w = dx - drawing.x; drawing.h = dy - drawing.y; }
+    else if (drawing.type === 'line' || drawing.type === 'arrow')   { drawing.x2 = dx; drawing.y2 = dy; }
+  }
+
+  function tickAutoPan() {
+    autoPanId = null;
+    if (!isDown || panOrigin || (!drawing && !resizeHandle && !dragOrigin && !lasso)) return;
+    const W  = canvas.clientWidth, H = canvas.clientHeight;
+    const vx = autoPanVel(lastMx, W), vy = autoPanVel(lastMy, H);
+    if (vx !== 0 || vy !== 0) {
+      vp.x -= vx; vp.y -= vy;
+      applyPointerOp(lastMx, lastMy, lastShift, drawing?.type === 'pen');
+      render();
+      autoPanId = requestAnimationFrame(tickAutoPan);  // loop until not near edge
+    }
+    // vx = vy = 0 → pointer moved away from edge; next onMove/onDocMove will restart if needed
+  }
+
+  function startAutoPan() { if (!autoPanId) autoPanId = requestAnimationFrame(tickAutoPan); }
+  function stopAutoPan()  { if (autoPanId) { cancelAnimationFrame(autoPanId); autoPanId = null; } }
+
+  // Receives pointer events outside the canvas element (document-level while isDown)
+  function onDocMove(e) {
+    const r   = canvas.getBoundingClientRect();
+    lastMx    = e.clientX - r.left;
+    lastMy    = e.clientY - r.top;
+    lastShift = e.shiftKey;
+    if (isDown && !panOrigin && (drawing || resizeHandle || dragOrigin || lasso)) startAutoPan();
+  }
+
   /* ─── Mouse move ──────────────────────────────────────────────────────────── */
   function onMove(e) {
     const { mx, my } = clientPos(e);
+    lastMx = mx; lastMy = my; lastShift = e.shiftKey;
 
     // Hover cursor — show resize handles on selected, 'move' when over any element
     if (!isDown && activeTool === 'select' && !spaceDown) {
@@ -1160,7 +1246,6 @@
     }
 
     if (!isDown) return;
-
     if (panOrigin) {
       vp.x = panOrigin.vx + mx - panOrigin.mx;
       vp.y = panOrigin.vy + my - panOrigin.my;
@@ -1168,66 +1253,22 @@
       return;
     }
 
-    const { x: dx, y: dy } = toDoc(mx, my);
-
-    if (activeTool === 'select') {
-      if (lasso) {
-        lasso.x2 = dx; lasso.y2 = dy;
-        render();
-        return;
-      }
-
-      if (resizeHandle) {
-        const ddx = dx - resizeHandle.originDx;
-        const ddy = dy - resizeHandle.originDy;
-        if (resizeHandle.isGroup) {
-          applyGroupResize(resizeHandle.snaps, resizeHandle.uBounds, resizeHandle.handleId, ddx, ddy, e.shiftKey);
-        } else {
-          const selId = [...selection][0];
-          const el    = elements.find(e => e.id === selId);
-          if (el) applyResize(el, resizeHandle.snap, resizeHandle.handleId, ddx, ddy, e.shiftKey);
-        }
-        render();
-        return;
-      }
-
-      if (dragOrigin) {
-        const ddx = dx - dragOrigin.dx;
-        const ddy = dy - dragOrigin.dy;
-        if (dragOrigin.isGroup) {
-          Object.entries(dragOrigin.snaps).forEach(([id, snap]) => {
-            const el = elements.find(e => e.id === id);
-            if (el) moveEl(el, snap, ddx, ddy);
-          });
-        } else {
-          const selId = [...selection][0];
-          const el    = elements.find(e => e.id === selId);
-          if (el) moveEl(el, dragOrigin.snap, ddx, ddy);
-        }
-        render();
-        return;
-      }
+    if (activeTool === 'eraser') {
+      const { x: dx, y: dy } = toDoc(mx, my);
+      eraseAt(dx, dy);
       return;
     }
 
-    if (activeTool === 'eraser') { eraseAt(dx, dy); return; }
-
-    if (!drawing) return;
-    if (drawing.type === 'pen') {
-      drawing.points.push({ x: dx, y: dy });
-    } else if (drawing.type === 'rect' || drawing.type === 'ellipse') {
-      drawing.w = dx - drawing.x;
-      drawing.h = dy - drawing.y;
-    } else if (drawing.type === 'line' || drawing.type === 'arrow') {
-      drawing.x2 = dx; drawing.y2 = dy;
-    }
+    applyPointerOp(mx, my, e.shiftKey, false);
     render();
+    if (drawing || resizeHandle || dragOrigin || lasso) startAutoPan();
   }
 
   /* ─── Mouse up ────────────────────────────────────────────────────────────── */
   function onUp() {
     if (!isDown) return;
     isDown = false;
+    stopAutoPan();
 
     if (panOrigin) { panOrigin = null; syncCursor(); return; }
 

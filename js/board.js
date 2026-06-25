@@ -425,6 +425,15 @@
 
     socket.on('drawing:deleted', ({ id }) => removeDrawingFromUI(id));
 
+    socket.on('drawing:renamed', ({ id, title }) => {
+      const d = drawings.find(d => d._id.toString() === id.toString());
+      if (d) d.title = title;
+      const card = document.querySelector(`#drawingsGrid [data-id="${id}"]`);
+      if (!card) return;
+      const titleEl = card.querySelector('.drawing-title-text');
+      if (titleEl) titleEl.textContent = title;
+    });
+
     socket.on('resource:new', ({ resource }) => {
       if (String(resource.workspace) !== String(currentWorkspaceId)) return;
       if (resources.find(r => r._id === resource._id)) return;
@@ -2868,6 +2877,7 @@
 
   function buildDrawingCard(drawing) {
     const isOwn   = drawing.authorName === user.username;
+    const canEdit = isOwn || isAdmin;
     const canDel  = isOwn || isAdmin;
 
     const card = document.createElement('div');
@@ -2878,20 +2888,20 @@
       ? `background-image:url(${profilePicCache[drawing.authorName]});background-size:cover;background-position:center`
       : `background:${getAvatarColor(drawing.authorName)}`;
 
+    const trashSvg  = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/></svg>`;
+    const confirmSvg = `<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>`;
+    const pencilSvg  = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+
     card.innerHTML = `
       <div class="clip-card-preview" title="Open in canvas">
         <img src="${drawing.preview}" alt="${escapeHtml(drawing.title)}" loading="lazy" />
       </div>
       <div class="clip-card-header">
-        <span class="clip-title-text">${escapeHtml(drawing.title || 'Untitled')}</span>
-        <div class="clip-actions">
-          ${canDel ? `<button class="clip-action-btn clip-delete-btn drawing-delete-btn" title="Delete drawing">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/>
-              <path d="M10 11v6M14 11v6M9 6V4h6v2"/>
-            </svg>
-          </button>` : ''}
-        </div>
+        <span class="drawing-title-text">${escapeHtml(drawing.title || 'Untitled')}</span>
+        ${canEdit || canDel ? `<div class="drawing-card-actions">
+          ${canEdit ? `<button class="drawing-action-btn drawing-rename-btn" title="Rename">${pencilSvg}</button>` : ''}
+          ${canDel  ? `<button class="drawing-action-btn drawing-delete-btn" title="Delete drawing">${trashSvg}</button>` : ''}
+        </div>` : ''}
       </div>
       <div class="clip-meta">
         <div class="clip-author">
@@ -2918,40 +2928,107 @@
         </button>
       </div>`;
 
-    // Preview click → open in canvas
-    card.querySelector('.clip-card-preview').addEventListener('click', () => {
+    // ── Open in canvas
+    const openInCanvas = () => {
       CanvasApp.open(drawing.elements);
       CanvasApp.setResources(resources);
       document.getElementById('drawingTitle').value = drawing.title || '';
-    });
+    };
+    card.querySelector('.clip-card-preview').addEventListener('click', openInCanvas);
+    card.querySelector('.btn-open-drawing').addEventListener('click', openInCanvas);
 
-    // Open button → same
-    card.querySelector('.btn-open-drawing').addEventListener('click', () => {
-      CanvasApp.open(drawing.elements);
-      CanvasApp.setResources(resources);
-      document.getElementById('drawingTitle').value = drawing.title || '';
-    });
-
-    // Download button → download the preview PNG
+    // ── Download preview PNG
     card.querySelector('.btn-download-drawing').addEventListener('click', () => {
-      const a       = document.createElement('a');
-      a.href        = drawing.preview;
-      a.download    = (drawing.title || 'drawing') + '.png';
+      const a    = document.createElement('a');
+      a.href     = drawing.preview;
+      a.download = (drawing.title || 'drawing') + '.png';
       a.click();
     });
 
-    // Delete button
-    card.querySelector('.drawing-delete-btn')?.addEventListener('click', async () => {
-      if (!confirm(`Delete drawing "${drawing.title}"?`)) return;
-      removeDrawingFromUI(drawing._id); // instant removal
-      try {
-        await api.drawings.remove(drawing._id);
-        showToast('Drawing deleted', 'success');
-      } catch (err) {
-        showToast(err.message || 'Failed to delete drawing', 'error');
-        loadDrawings(); // rollback
+    // ── Inline rename (pencil button or double-click title)
+    if (canEdit) {
+      function startRename() {
+        const titleEl = card.querySelector('.drawing-title-text');
+        if (!titleEl) return;  // already editing
+        const input      = document.createElement('input');
+        input.className  = 'drawing-title-input';
+        input.value      = drawing.title || '';
+        input.spellcheck = false;
+        titleEl.replaceWith(input);
+
+        let done = false;
+
+        function restore(newTitle) {
+          const span       = document.createElement('span');
+          span.className   = 'drawing-title-text';
+          span.textContent = newTitle;
+          span.addEventListener('dblclick', startRename);
+          input.replaceWith(span);
+        }
+
+        async function commit() {
+          if (done) return; done = true;
+          const newTitle = input.value.trim() || 'Untitled';
+          restore(newTitle);
+          if (newTitle === (drawing.title || 'Untitled')) return;
+          drawing.title = newTitle;
+          const cached = drawings.find(d => d._id === drawing._id);
+          if (cached) cached.title = newTitle;
+          try {
+            await api.drawings.rename(drawing._id, newTitle);
+          } catch {
+            showToast('Failed to rename drawing', 'error');
+          }
+        }
+
+        function cancel() {
+          if (done) return; done = true;
+          restore(drawing.title || 'Untitled');
+        }
+
+        input.addEventListener('blur', commit);
+        input.addEventListener('keydown', e => {
+          if (e.key === 'Enter')  { e.preventDefault(); input.removeEventListener('blur', commit); commit(); }
+          if (e.key === 'Escape') { e.preventDefault(); input.removeEventListener('blur', commit); cancel(); }
+        });
+        requestAnimationFrame(() => { input.focus(); input.select(); });
       }
-    });
+
+      card.querySelector('.drawing-rename-btn').addEventListener('click', startRename);
+      card.querySelector('.drawing-title-text').addEventListener('dblclick', startRename);
+    }
+
+    // ── Two-step delete: first click arms it (red pulse), second click confirms
+    if (canDel) {
+      const deleteBtn = card.querySelector('.drawing-delete-btn');
+      let deleteTimer = null;
+
+      deleteBtn.addEventListener('click', async () => {
+        if (deleteBtn.classList.contains('--confirming')) {
+          clearTimeout(deleteTimer);
+          deleteBtn.classList.remove('--confirming');
+          deleteBtn.title     = 'Delete drawing';
+          deleteBtn.innerHTML = trashSvg;
+          removeDrawingFromUI(drawing._id);
+          try {
+            await api.drawings.remove(drawing._id);
+            showToast('Drawing deleted', 'success');
+          } catch (err) {
+            showToast(err.message || 'Failed to delete drawing', 'error');
+            loadDrawings();
+          }
+        } else {
+          deleteBtn.classList.add('--confirming');
+          deleteBtn.title     = 'Click again to confirm delete';
+          deleteBtn.innerHTML = confirmSvg;
+          deleteTimer = setTimeout(() => {
+            deleteBtn.classList.remove('--confirming');
+            deleteBtn.title     = 'Delete drawing';
+            deleteBtn.innerHTML = trashSvg;
+          }, 2000);
+        }
+      });
+    }
 
     return card;
   }
