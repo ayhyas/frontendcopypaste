@@ -1351,6 +1351,7 @@
     function grow() {
       textArea.style.height = 'auto';
       textArea.style.height = Math.max(lineH, textArea.scrollHeight) + 'px';
+      textArea.style.width  = '2px';                                          // reset so scrollWidth reflects content, not previous max
       textArea.style.width  = Math.max(2, textArea.scrollWidth + 4) + 'px';
       if (textPreview) scheduleRender();
     }
