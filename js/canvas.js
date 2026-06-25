@@ -15,6 +15,7 @@
   const BG_COLOR   = '#0b0b16';
   let vp           = { x: 0, y: 0, s: 1 };
   let drawing      = null;
+  let textPreview  = null;        // live text element shown while textarea is open
   let selection    = new Set();   // set of selected element IDs
   let clipboard    = [];          // internal copy/paste buffer (deep clones)
   let lasso        = null;        // rubber-band { x1,y1,x2,y2,additive }
@@ -163,6 +164,16 @@
       if (el) drawSelBox(el);
     } else if (selection.size > 1) {
       drawGroupSelBox();
+    }
+
+    // While the textarea is open: render live text on canvas + bounding box
+    if (textPreview) {
+      ctx.save();
+      ctx.translate(vp.x, vp.y);
+      ctx.scale(vp.s, vp.s);
+      renderEl(ctx, textPreview);
+      ctx.restore();
+      drawSelBox(textPreview);
     }
 
     if (lasso) drawLasso();
@@ -1324,10 +1335,21 @@
     textArea.dataset.stroke   = activeStyle.stroke;
     textArea.value            = '';
 
+    // Live canvas preview — keeps text + bounding box in sync while typing
+    textPreview = {
+      id: '__preview__', type: 'text',
+      x: dx, y: dy,
+      text: '',
+      fontSize: activeStyle.fontSize,
+      stroke: activeStyle.stroke,
+      fill: 'none', width: 1, dash: false, opacity: 1,
+    };
+
     function grow() {
       textArea.style.height = 'auto';
       textArea.style.height = Math.max(lineH, textArea.scrollHeight) + 'px';
       textArea.style.width  = Math.max(2, textArea.scrollWidth + 4) + 'px';
+      if (textPreview) { textPreview.text = textArea.value; render(); }
     }
 
     textArea.oninput = () => { grow(); };
@@ -1374,7 +1396,8 @@
 
   function finishText() {
     if (textFocusRaf) { cancelAnimationFrame(textFocusRaf); textFocusRaf = null; }
-    drawing = null;
+    drawing     = null;
+    textPreview = null;
     if (!textArea) return;
     textArea.style.display = 'none';
     textArea.value         = '';
