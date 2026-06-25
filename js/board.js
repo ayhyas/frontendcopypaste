@@ -722,7 +722,8 @@
       if (li) li.replaceWith(buildWorkspaceItem(ws));
       openUnlockModal(ws);
     }
-    _lockHandlerActive = false;
+    // _lockHandlerActive stays true until closeUnlockModal or a workspace change resets it,
+    // preventing concurrent 403s from opening the modal multiple times.
   }
 
   // ─── Load clips ────────────────────────────────────────────────────────────
@@ -1414,7 +1415,7 @@
       const fromWs = workspaces.find(w => w._id === currentWorkspaceId);
       const ok = confirm(`You are currently sharing your screen in "${fromWs?.name || 'this workspace'}".\n\nSwitching will stop your stream. Continue?`);
       if (!ok) return;
-      stopBroadcasting(); // explicit, intentional stop
+      stopBroadcasting();
     }
 
     // Leave previous room
@@ -1423,11 +1424,7 @@
     }
 
     currentWorkspaceId = id;
-
-    // Set API token for this workspace and join its socket room
-    const wsToken = unlockedWorkspaces.get(id) || null;
-    api.setWorkspaceToken(wsToken);
-    if (socket && id) socket.emit('ws:join', { wsId: id, wsToken });
+    _lockHandlerActive = false; // reset on workspace change so fallback handler works fresh
 
     // Update active state in sidebar
     document.querySelectorAll('.ws-item').forEach((el) => el.classList.remove('ws-item-active'));
@@ -1450,10 +1447,28 @@
     onlineUsers = [];
     renderOnlineUsers();
 
-    // Reload all content for new workspace
+    // Clear stale content immediately so previous workspace data doesn't flash
+    clips = []; serverClipTotal = 0;
+    clipsGrid.innerHTML = '';
+    emptyState.style.display = 'none';
+    document.getElementById('drawingsGrid').innerHTML = '';
+    document.getElementById('resourcesGrid').innerHTML = '';
+    updateClipCount(0);
+    updateDrawingCount(0);
+
+    const wsToken = unlockedWorkspaces.get(id) || null;
+
+    // If locked and we have no token, show the unlock modal immediately — no wasted API calls
+    if (ws?.isLocked && !isAdmin && !wsToken) {
+      openUnlockModal(ws);
+      return;
+    }
+
+    // Join socket room (server sends screen:available here if a broadcast is active)
+    api.setWorkspaceToken(wsToken);
+    if (socket && id) socket.emit('ws:join', { wsId: id, wsToken });
+
     currentPage = 1;
-    clips = [];
-    serverClipTotal = 0;
     loadClips(1);
     loadDrawings();
     loadResources();
@@ -1608,6 +1623,7 @@
   function closeUnlockModal() {
     document.getElementById('wsUnlockOverlay').classList.remove('active');
     unlockModalWs = null;
+    _lockHandlerActive = false;
   }
 
   function setupUnlockModal() {
@@ -1631,10 +1647,22 @@
       btn.disabled = true;
       try {
         const result = await api.workspaces.verify(unlockModalWs._id, password);
-        const wsId = unlockModalWs._id;
-        unlockedWorkspaces.set(wsId, result.accessToken);
-        closeUnlockModal();
-        selectWorkspace(wsId); // picks up the token from unlockedWorkspaces
+        const wsId    = unlockModalWs._id;
+        const wsToken = result.accessToken;
+        unlockedWorkspaces.set(wsId, wsToken);
+        closeUnlockModal(); // also resets _lockHandlerActive
+
+        if (wsId === currentWorkspaceId) {
+          // selectWorkspace would short-circuit (same ID) — join room and reload directly
+          api.setWorkspaceToken(wsToken);
+          if (socket) socket.emit('ws:join', { wsId, wsToken });
+          currentPage = 1;
+          loadClips(1);
+          loadDrawings();
+          loadResources();
+        } else {
+          selectWorkspace(wsId);
+        }
       } catch (err) {
         errEl.textContent = err.message || 'Incorrect password';
         document.getElementById('wsUnlockInput').focus();
