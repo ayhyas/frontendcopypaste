@@ -1181,6 +1181,9 @@ pre[class*="language-"] {
 }
 .live-ctrl-btn:hover { background: rgba(255,255,255,.14); color: var(--text); }
 .live-ctrl-close:hover { background: rgba(239,68,68,.2); color: #f87171; }
+/* When audio is actively playing, highlight the mute button so the state is obvious */
+.live-ctrl-btn--unmuted { color: #a78bfa; }
+.live-ctrl-btn--unmuted:hover { background: rgba(124,58,237,.25); color: #c4b5fd; }
 
 .live-video-wrap {
   flex: 1; position: relative;
@@ -1258,6 +1261,26 @@ pre[class*="language-"] {
   display: flex; align-items: center; flex-shrink: 0;
   color: #f59e0b; margin-left: 2px;
 }
+.ws-item-lock--open { color: #22c55e; } /* green = access already granted */
+
+/* ─── Live stream tap-to-unmute overlay ─────────────────────────────────────── */
+.live-audio-hint {
+  position: absolute; inset: 0; z-index: 4;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0,0,0,.55);
+  backdrop-filter: blur(2px);
+}
+.live-audio-hint-btn {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 22px;
+  background: rgba(124,58,237,.85);
+  color: #fff; font-size: .95rem; font-weight: 600;
+  border: none; border-radius: 10px;
+  cursor: pointer; transition: background .15s;
+  -webkit-tap-highlight-color: transparent; /* suppress iOS tap flash */
+}
+.live-audio-hint-btn:hover { background: rgba(124,58,237,1); }
+.live-audio-hint-btn:active { background: #6d28d9; transform: scale(.97); }
 .ws-lock-btn { color: var(--text-3) !important; }
 .ws-lock-btn--active { color: #f59e0b !important; }
 .ws-lock-btn--active:hover { background: rgba(245,158,11,.12) !important; color: #f59e0b !important; }

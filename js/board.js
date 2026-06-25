@@ -40,6 +40,26 @@
   // Workspace lock state — Map of wsId → accessToken (JWT)
   const unlockedWorkspaces = new Map();
 
+  // Persist unlock tokens across page refreshes (sessionStorage — cleared on tab close)
+  const WS_TOK = 'cs_ws_tok_';
+  function saveWorkspaceToken(wsId, token) {
+    unlockedWorkspaces.set(wsId, token);
+    try { sessionStorage.setItem(WS_TOK + wsId, token); } catch {}
+  }
+  function clearWorkspaceToken(wsId) {
+    unlockedWorkspaces.delete(wsId);
+    try { sessionStorage.removeItem(WS_TOK + wsId); } catch {}
+  }
+  function loadStoredWorkspaceTokens() {
+    workspaces.forEach(ws => {
+      if (!ws.isLocked || isAdmin) return;
+      try {
+        const tok = sessionStorage.getItem(WS_TOK + ws._id);
+        if (tok) unlockedWorkspaces.set(ws._id, tok);
+      } catch {}
+    });
+  }
+
   // Audio streaming state
   let broadcasterMicStream  = null; // broadcaster's own mic MediaStream
   let broadcasterMicEnabled = false;
@@ -360,7 +380,7 @@
       if (!isLocked) ws.lockPassword = null;
 
       // Always revoke the stored token when lock state changes
-      unlockedWorkspaces.delete(id);
+      clearWorkspaceToken(id);
       socket.emit('ws:leave', { wsId: id });
 
       if (currentWorkspaceId === id) {
@@ -705,7 +725,7 @@
   function handleWorkspaceLocked() {
     if (!currentWorkspaceId || _lockHandlerActive) return;
     _lockHandlerActive = true;
-    unlockedWorkspaces.delete(currentWorkspaceId);
+    clearWorkspaceToken(currentWorkspaceId);
     api.setWorkspaceToken(null);
     if (socket) socket.emit('ws:leave', { wsId: currentWorkspaceId });
     clips = []; drawings = []; resources = [];
@@ -1313,6 +1333,8 @@
     try {
       const { data } = await api.workspaces.list();
       workspaces = data;
+      // Restore unlock tokens before building sidebar items so lock icons render correctly
+      loadStoredWorkspaceTokens();
       workspaces.forEach((ws) => appendWorkspaceItem(ws));
 
       if (workspaces.length > 0) {
@@ -1340,7 +1362,8 @@
   }
 
   function buildWorkspaceItem(ws) {
-    const isOwn = ws.ownerName === user.username || isAdmin;
+    const isOwn      = ws.ownerName === user.username || isAdmin;
+    const isUnlocked = ws.isLocked && !isAdmin && unlockedWorkspaces.has(ws._id);
     const li = document.createElement('li');
     li.className = 'ws-item';
     li.dataset.id = ws._id;
@@ -1350,6 +1373,12 @@
       <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
     </svg>`;
 
+    // Open padlock: shackle disconnected on one side
+    const openLockIconSvg = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+      <path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+    </svg>`;
+
     li.innerHTML = `
       <div class="ws-item-icon">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1357,7 +1386,7 @@
         </svg>
       </div>
       <span class="ws-item-name">${escapeHtml(ws.name)}</span>
-      ${ws.isLocked ? `<span class="ws-item-lock" title="Password protected">${lockIconSvg}</span>` : ''}
+      ${ws.isLocked ? `<span class="ws-item-lock ${isUnlocked ? 'ws-item-lock--open' : ''}" title="${isUnlocked ? 'Unlocked' : 'Password protected'}">${isUnlocked ? openLockIconSvg : lockIconSvg}</span>` : ''}
       ${ws.clipCount ? `<span class="ws-item-count">${ws.clipCount}</span>` : '<span class="ws-item-count" style="display:none">0</span>'}
       ${isOwn ? `
       <div class="ws-item-actions">
@@ -1646,14 +1675,19 @@
       errEl.textContent = '';
       btn.disabled = true;
       try {
-        const result = await api.workspaces.verify(unlockModalWs._id, password);
-        const wsId    = unlockModalWs._id;
-        const wsToken = result.accessToken;
-        unlockedWorkspaces.set(wsId, wsToken);
-        closeUnlockModal(); // also resets _lockHandlerActive
+        const result   = await api.workspaces.verify(unlockModalWs._id, password);
+        const wsId     = unlockModalWs._id;
+        const wsToken  = result.accessToken;
+        const wsObj    = unlockModalWs; // capture before closeUnlockModal clears it
+        saveWorkspaceToken(wsId, wsToken); // also writes sessionStorage
+        closeUnlockModal();               // resets _lockHandlerActive
+
+        // Rebuild sidebar item to show open-lock visual
+        const sidebarItem = document.querySelector(`.ws-item[data-id="${wsId}"]`);
+        if (sidebarItem) sidebarItem.replaceWith(buildWorkspaceItem(wsObj));
 
         if (wsId === currentWorkspaceId) {
-          // selectWorkspace would short-circuit (same ID) — join room and reload directly
+          // selectWorkspace short-circuits on same ID — join room and reload directly
           api.setWorkspaceToken(wsToken);
           if (socket) socket.emit('ws:join', { wsId, wsToken });
           currentPage = 1;
@@ -1796,6 +1830,19 @@
     const liveVideo = document.getElementById('liveVideo');
     liveVideo.addEventListener('playing', () => {
       document.getElementById('liveConnecting').style.display = 'none';
+    });
+
+    // Tap-to-unmute hint: this click IS a user gesture, so play() will succeed on iOS
+    document.getElementById('liveAudioHintBtn')?.addEventListener('click', () => {
+      const aud = document.getElementById('liveAudio');
+      if (!aud) return;
+      aud.muted = false;
+      aud.play()
+        .then(() => {
+          document.getElementById('liveAudioHint').style.display = 'none';
+          updateMuteBtn(false);
+        })
+        .catch(() => {}); // user clicked but still blocked — edge case, leave hint
     });
   }
 
@@ -2071,7 +2118,11 @@
 
     pc.ontrack = ({ streams }) => {
       const vid = document.getElementById('liveVideo');
-      if (vid.srcObject !== streams[0]) vid.srcObject = streams[0];
+      if (vid.srcObject !== streams[0]) {
+        vid.srcObject = streams[0];
+        // Route audio to dedicated element — liveVideo stays muted for reliable autoplay
+        attachLiveAudio(streams[0]);
+      }
     };
 
     pc.onicecandidate = ({ candidate }) => {
@@ -2153,21 +2204,71 @@
       vid.srcObject = null;
     }
 
+    detachLiveAudio(); // stops and clears the separate audio element
+
     closeLiveOverlay();
 
     // Broadcast is still live — restore the watch banner so the user can rejoin
     if (activeBroadcasterId) showLiveBanner(activeBroadcasterName);
   }
 
-  function toggleMute() {
-    const vid = document.getElementById('liveVideo');
+  // ── Live-stream audio helpers ───────────────────────────────────────────────
+  // Audio is routed to a dedicated <audio id="liveAudio"> element rather than
+  // through liveVideo so we can unmute independently and reliably on mobile.
+
+  function updateMuteBtn(muted) {
     const btn = document.getElementById('liveMuteBtn');
-    vid.muted = !vid.muted;
-    btn.title = vid.muted ? 'Unmute audio' : 'Mute audio';
-    // swap the icon
-    btn.querySelector('svg').innerHTML = vid.muted
+    if (!btn) return;
+    btn.title = muted ? 'Unmute audio' : 'Mute audio';
+    btn.classList.toggle('live-ctrl-btn--unmuted', !muted);
+    btn.querySelector('svg').innerHTML = muted
       ? '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>'
       : '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>';
+  }
+
+  function attachLiveAudio(stream) {
+    const audioTracks = stream.getAudioTracks();
+    if (!audioTracks.length) return; // broadcaster shared screen without audio — nothing to do
+
+    const aud = document.getElementById('liveAudio');
+    if (!aud) return;
+
+    // Build a clean audio-only stream (liveVideo stays permanently muted for video autoplay)
+    aud.srcObject = new MediaStream(audioTracks);
+    aud.muted = false;
+
+    aud.play()
+      .then(() => {
+        document.getElementById('liveAudioHint').style.display = 'none';
+        updateMuteBtn(false); // audio is live and unmuted
+      })
+      .catch(() => {
+        // Browser blocked autoplay with audio — show a big tap-to-unmute hint
+        document.getElementById('liveAudioHint').style.display = 'flex';
+        updateMuteBtn(true);
+      });
+  }
+
+  function detachLiveAudio() {
+    const aud = document.getElementById('liveAudio');
+    if (!aud) return;
+    aud.pause();
+    aud.srcObject = null;
+    aud.muted = true;
+    const hint = document.getElementById('liveAudioHint');
+    if (hint) hint.style.display = 'none';
+    updateMuteBtn(true);
+  }
+
+  function toggleMute() {
+    const aud = document.getElementById('liveAudio');
+    if (!aud || !aud.srcObject) return;
+    aud.muted = !aud.muted;
+    if (!aud.muted) {
+      aud.play().catch(() => {}); // resume if paused (e.g. on some mobile browsers)
+      document.getElementById('liveAudioHint').style.display = 'none';
+    }
+    updateMuteBtn(aud.muted);
   }
 
   // ─── Broadcaster mic ───────────────────────────────────────────────────────
@@ -2339,17 +2440,20 @@
     // Reset to video mode (fallback will switch to img if needed)
     document.getElementById('liveVideo').style.display = '';
     document.getElementById('liveFallbackImg').style.display = 'none';
+    document.getElementById('liveAudioHint').style.display = 'none';
 
     // Reset quality selector to highest for each new viewing session
     document.getElementById('liveQualitySelect').value = 'high';
 
-    // Always start muted (avoids autoplay-with-audio block on Safari/Firefox)
-    const vid = document.getElementById('liveVideo');
-    vid.muted = true;
-    const muteBtn = document.getElementById('liveMuteBtn');
-    muteBtn.title = 'Unmute audio';
-    muteBtn.querySelector('svg').innerHTML =
-      '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>';
+    // liveVideo is ALWAYS muted — audio comes from the separate liveAudio element
+    document.getElementById('liveVideo').muted = true;
+    updateMuteBtn(true); // starts muted; attachLiveAudio() will auto-unmute when tracks arrive
+
+    // Prime the audio context WHILE STILL IN THE USER GESTURE CHAIN (critical for iOS Safari).
+    // Calling play() on liveAudio before srcObject is set "unlocks" the audio context so
+    // the later play() in attachLiveAudio() is allowed without another gesture.
+    const aud = document.getElementById('liveAudio');
+    if (aud) aud.play().catch(() => {});
 
     overlay.style.display = 'flex';
     requestAnimationFrame(() => overlay.classList.add('live-overlay--visible'));
